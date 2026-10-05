@@ -6,8 +6,8 @@ services:
     container_name: nayaka-web-app
     restart: unless-stopped
     ports:
-      # Expose langsung port 3003 ke publik
-      - "3003:3000"
+      # Expose langsung port 701 ke publik
+      - "701:3000"
     env_file:
       - .env
     environment:
