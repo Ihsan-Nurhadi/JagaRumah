@@ -6,8 +6,8 @@ services:
     container_name: nayaka-web-app
     restart: unless-stopped
     ports:
-      # Expose port 3003 pada VPS ke port 3000 container
-      - "127.0.0.1:3003:3000"
+      # Expose langsung port 3003 ke publik
+      - "3003:3000"
     env_file:
       - .env
     environment:
