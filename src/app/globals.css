@@ -1,0 +1,552 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-surface: var(--success-surface);
+
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-surface: var(--warning-surface);
+
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-danger-surface: var(--danger-surface);
+
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-surface: var(--info-surface);
+
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --font-sans: var(--font-public-sans);
+  --font-heading: var(--font-public-sans);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --radius-2xl: 12px;
+}
+
+/*
+  Radius ditulis eksplisit, bukan hasil kali satu nilai dasar.
+  Tombol dan input 6px, kartu 10px, modal 12px, lencana 4px.
+  Kalau semuanya seragam, wadah dan kontrol kehilangan bahasa visualnya.
+*/
+
+:root {
+  --background: #f4f4f5;
+  --foreground: #18181b;
+
+  --card: #ffffff;
+  --card-foreground: #18181b;
+
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+
+  --primary: #c2410c;
+  --primary-foreground: #ffffff;
+
+  --secondary: #ffffff;
+  --secondary-foreground: #18181b;
+
+  --muted: #f4f4f5;
+  --muted-foreground: #52525b;
+
+  --accent: #fff7ed;
+  --accent-foreground: #c2410c;
+
+  --destructive: #b91c1c;
+  --destructive-foreground: #ffffff;
+
+  --success: #15803d;
+  --success-foreground: #ffffff;
+  --success-surface: #f0fdf4;
+
+  --warning: #b45309;
+  --warning-foreground: #ffffff;
+  --warning-surface: #fffbeb;
+
+  --danger: #b91c1c;
+  --danger-foreground: #ffffff;
+  --danger-surface: #fef2f2;
+
+  --info: #1d4ed8;
+  --info-foreground: #ffffff;
+  --info-surface: #eff6ff;
+
+  /* Batas input harus 3:1 terhadap latar karena membatasi kontrol interaktif. */
+  --input: #71717a;
+  /* Batas dekoratif tidak membawa informasi, jadi tidak ikut ambang 3:1. */
+  --border: #e4e4e7;
+  --ring: #c2410c;
+
+  --sidebar: #ffffff;
+  --sidebar-foreground: #18181b;
+  --sidebar-accent: #fff7ed;
+  --sidebar-accent-foreground: #c2410c;
+  --sidebar-border: #e4e4e7;
+  --sidebar-ring: #c2410c;
+
+  /*
+    Warna grafik.
+
+    Dipisahkan dari warna status karena tugasnya berbeda: warna status menandai keadaan
+    (berhasil, menunggu, gagal), sedangkan warna grafik memisahkan deret angka. Memakai ulang
+    warna status di grafik akan membuat deret biasa terbaca sebagai peringatan.
+
+    Urutannya tetap di seluruh panel: pendapatan oranye, pelanggan biru, langganan hijau,
+    perangkat ungu, piutang teal. Pembaca yang berpindah grafik tidak perlu membaca ulang
+    keterangannya.
+
+    Semua sudah diperiksa terhadap permukaan kartu dan latar halaman pada ambang 3:1, yaitu
+    ambang untuk elemen grafis. Nilai terendah adalah hijau di latar halaman, 4.56:1.
+  */
+  --chart-1: #c2410c;
+  --chart-2: #1d4ed8;
+  --chart-3: #15803d;
+  --chart-4: #7c3aed;
+  --chart-5: #0e7490;
+}
+
+.dark {
+  --background: #09090b;
+  --foreground: #fafafa;
+
+  --card: #18181b;
+  --card-foreground: #fafafa;
+
+  --popover: #18181b;
+  --popover-foreground: #fafafa;
+
+  /*
+    Oranye tema gelap lebih terang daripada tema terang, dan teksnya gelap.
+    Putih di atas oranye terang hanya 3.56:1 dan gagal untuk teks normal.
+  */
+  --primary: #f97316;
+  --primary-foreground: #18181b;
+
+  --secondary: #27272a;
+  --secondary-foreground: #fafafa;
+
+  --muted: #27272a;
+  --muted-foreground: #a1a1aa;
+
+  --accent: #431407;
+  --accent-foreground: #f97316;
+
+  --destructive: #f87171;
+  --destructive-foreground: #18181b;
+
+  --success: #4ade80;
+  --success-foreground: #18181b;
+  --success-surface: #052e16;
+
+  --warning: #fbbf24;
+  --warning-foreground: #18181b;
+  --warning-surface: #451a03;
+
+  --danger: #f87171;
+  --danger-foreground: #18181b;
+  --danger-surface: #450a0a;
+
+  --info: #60a5fa;
+  --info-foreground: #18181b;
+  --info-surface: #172554;
+
+  --input: #71717a;
+  --border: #3f3f46;
+  --ring: #f97316;
+
+  --sidebar: #18181b;
+  --sidebar-foreground: #fafafa;
+  --sidebar-accent: #431407;
+  --sidebar-accent-foreground: #f97316;
+  --sidebar-border: #3f3f46;
+  --sidebar-ring: #f97316;
+
+  /*
+    Warna grafik tema gelap memakai versi terang dari tiap warna, bukan versi tema terang.
+    Nilai tema terang di atas latar #18181b hanya mencapai 3.1:1, terlalu dekat dengan ambang
+    untuk elemen setipis garis grafik. Nilai di bawah berkisar 6.3:1 sampai 10.2:1.
+  */
+  --chart-1: #f97316;
+  --chart-2: #60a5fa;
+  --chart-3: #4ade80;
+  --chart-4: #a78bfa;
+  --chart-5: #22d3ee;
+}
+
+/*
+  Login menggunakan panel identitas yang langsung mengacu pada lensa kamera CCTV.
+  Lingkaran dan crosshair menjadi motif, bukan gambar palsu, sehingga halaman tetap ringan
+  dan tidak mengarang aset brand yang belum diberikan.
+*/
+.login-page {
+  background: var(--background);
+}
+
+.login-frame {
+  background: var(--card);
+  box-shadow: 0 18px 48px rgb(24 24 27 / 10%);
+}
+
+.login-identity {
+  background: #073b4c;
+}
+
+.login-identity::before,
+.login-identity::after {
+  position: absolute;
+  content: "";
+  border: 1px solid rgb(255 209 102 / 35%);
+  border-radius: 999px;
+}
+
+.login-identity::before {
+  width: 26rem;
+  height: 26rem;
+  right: -9rem;
+  top: 8%;
+}
+
+.login-identity::after {
+  width: 18rem;
+  height: 18rem;
+  right: -5rem;
+  top: 18%;
+}
+
+.login-form-panel {
+  background: var(--card);
+}
+
+.login-lens {
+  position: absolute;
+  border: 1px solid rgb(6 214 160 / 55%);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.login-lens-large {
+  width: 19rem;
+  height: 19rem;
+  right: -3rem;
+  top: 13%;
+}
+
+.login-lens-small {
+  width: 10rem;
+  height: 10rem;
+  right: 4.5rem;
+  top: 31%;
+  border-color: rgb(255 127 80 / 60%);
+}
+
+.login-crosshair {
+  position: absolute;
+  width: 2.5rem;
+  height: 2.5rem;
+  border: 1px solid #ffd166;
+  pointer-events: none;
+}
+
+.login-crosshair-one {
+  right: 8rem;
+  top: 21%;
+}
+
+.login-crosshair-two {
+  right: 15rem;
+  top: 58%;
+  border-color: #118ab2;
+}
+
+.login-crosshair::before,
+.login-crosshair::after {
+  position: absolute;
+  content: "";
+  background: currentColor;
+}
+
+.login-crosshair::before {
+  width: 100%;
+  height: 1px;
+  top: 50%;
+}
+
+.login-crosshair::after {
+  width: 1px;
+  height: 100%;
+  left: 50%;
+}
+
+.login-scanline {
+  position: absolute;
+  right: 0;
+  bottom: 24%;
+  width: 42%;
+  height: 1px;
+  background: #118ab2;
+  opacity: 0.7;
+}
+
+.dark .login-frame {
+  box-shadow: 0 18px 48px rgb(0 0 0 / 35%);
+}
+
+@media (max-width: 1023px) {
+  .login-frame {
+    min-height: auto;
+    grid-template-rows: auto 1fr;
+  }
+
+  .login-identity::before {
+    width: 15rem;
+    height: 15rem;
+    right: -5rem;
+    top: -5rem;
+  }
+
+  .login-identity::after {
+    width: 9rem;
+    height: 9rem;
+    right: 1rem;
+    top: 1.5rem;
+  }
+
+  .login-lens-large {
+    width: 12rem;
+    height: 12rem;
+    right: -3rem;
+    top: -4rem;
+  }
+
+  .login-lens-small {
+    width: 5rem;
+    height: 5rem;
+    right: 3rem;
+    top: 3rem;
+  }
+
+  .login-crosshair {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+
+  .login-crosshair-one {
+    right: 6rem;
+    top: 2.5rem;
+  }
+
+  .login-crosshair-two {
+    display: none;
+  }
+
+  .login-scanline {
+    bottom: 1.5rem;
+    width: 34%;
+  }
+}
+
+@media (max-width: 639px) {
+  .login-page {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+
+  .login-form-panel {
+    align-items: flex-start;
+    padding: 2rem 1.25rem 2.5rem;
+  }
+
+  .login-form-panel > div {
+    max-width: 30rem;
+  }
+}
+
+/*
+  Shell admin memakai dua area scroll yang independen. Header dan brand tetap berada di viewport,
+  sementara daftar menu dan isi halaman dapat bergerak tanpa saling menarik.
+*/
+.admin-shell {
+  background: var(--background);
+}
+
+.admin-sidebar-scroll,
+.admin-content-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--input) transparent;
+}
+
+.admin-sidebar-scroll::-webkit-scrollbar,
+.admin-content-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.admin-sidebar-scroll::-webkit-scrollbar-thumb,
+.admin-content-scroll::-webkit-scrollbar-thumb {
+  background: var(--input);
+  border-radius: 4px;
+}
+
+.admin-sidebar-scroll::-webkit-scrollbar-track,
+.admin-content-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.admin-header {
+  box-shadow: 0 1px 0 rgb(24 24 27 / 3%);
+}
+
+.dark .admin-header {
+  box-shadow: 0 1px 0 rgb(255 255 255 / 5%);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    @apply font-sans;
+  }
+}
+
+/*
+  Aturan ini sengaja diletakkan di luar layer.
+
+  Kelas dasar tombol shadcn memuat .outline-none, dan Tailwind menaruh kelas itu
+  pada layer utilities. Layer utilities menang atas layer base tanpa memandang
+  spesifisitas, jadi aturan fokus di dalam layer base akan terhapus dan tombol
+  hanya menyisakan ring bawaan beropasitas 50% yang kontrasnya 2.19:1.
+  Gaya di luar layer menang atas gaya berlayer, sehingga indikator fokus
+  terverifikasi 5.18:1 di tema terang dan 6.32:1 di tema gelap.
+*/
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+@layer utilities {
+  /* Nominal uang dan kolom angka sejajar antar baris. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/*
+  SweetAlert2 merender di luar pohon React, jadi tidak menerima kelas Tailwind.
+  Warnanya diambil dari token yang sama supaya kedua tema tetap benar.
+*/
+.swal2-popup {
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-2xl);
+  font-family: var(--font-public-sans);
+}
+
+.swal2-title {
+  color: var(--card-foreground);
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.swal2-html-container {
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+}
+
+.swal2-timer-progress-bar {
+  background: var(--primary);
+}
+
+.swal2-actions {
+  gap: 0.5rem;
+}
+
+.swal2-styled {
+  border-radius: var(--radius-md);
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  box-shadow: none;
+}
+
+.swal2-styled:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.swal2-confirm.swal-confirm,
+.swal2-confirm.swal-confirm-destructive {
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.swal2-confirm.swal-confirm-destructive {
+  color: var(--destructive-foreground);
+  background: var(--destructive);
+}
+
+.swal2-cancel.swal-cancel {
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  border: 1px solid var(--input);
+}
+
+.swal2-toast {
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+  font-family: var(--font-public-sans);
+}
+
+.swal2-toast .swal2-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+}

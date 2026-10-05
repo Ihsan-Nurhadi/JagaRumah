@@ -1,0 +1,10 @@
+# Pengaturan pnpm. Sejak pnpm 10 berkas ini yang dibaca, bukan lagi medan "pnpm" di
+# package.json. Dibiarkan tanpa medan "packages" karena proyek ini satu paket, bukan monorepo.
+#
+# esbuild dan unrs-resolver memasang binari natif lewat postinstall. pnpm memblokir skrip
+# bangun secara bawaan, dan sejak pnpm 11 kehadiran skrip yang diblokir membuat perintah
+# gagal dengan ERR_PNPM_IGNORED_BUILDS. Keduanya diizinkan di sini; tanpa baris ini
+# `pnpm install` gagal di Vercel.
+allowBuilds:
+  esbuild: true
+  unrs-resolver: true

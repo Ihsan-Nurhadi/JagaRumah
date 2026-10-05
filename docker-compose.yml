@@ -1,0 +1,16 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nayaka-web-app
+    restart: unless-stopped
+    ports:
+      # Expose port 3003 pada VPS ke port 3000 container
+      - "127.0.0.1:3003:3000"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
