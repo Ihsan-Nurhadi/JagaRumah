@@ -521,7 +521,8 @@ export function DeviceDetail({ deviceId }: { deviceId: string }) {
 
       <AssignDialog
         open={dialog === "assign"}
-        deviceId={device.device_uid}
+        deviceId={deviceId}
+        deviceName={device.name ?? device.device_uid}
         onClose={() => setDialog(null)}
         onDone={() => {
           setDialog(null);
@@ -725,11 +726,13 @@ function BelumAda() {
 function AssignDialog({
   open,
   deviceId,
+  deviceName,
   onClose,
   onDone,
 }: {
   open: boolean;
   deviceId: string;
+  deviceName?: string | null;
   onClose: () => void;
   onDone: () => void;
 }) {
@@ -759,7 +762,7 @@ function AssignDialog({
       });
       notifySuccess(
         "Perangkat ditugaskan",
-        `Perangkat ${deviceId} kini terpasang pada ${customer.full_name}.`,
+        `Perangkat ${deviceName ?? deviceId} kini terpasang pada ${customer.full_name}.`,
       );
       reset();
       setCustomer(null);

@@ -30,7 +30,15 @@ export const POST = routeHandler(
     await requireCsrf(request);
 
     const { device_id: rawId } = await (context as Params).params;
-    const deviceId = requireUuid(rawId, "device_id");
+    let targetId = rawId;
+    if (rawId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawId)) {
+      const found = await queryOne<{ id: string }>(
+        "SELECT id FROM devices WHERE device_uid = $1",
+        [rawId],
+      );
+      if (found) targetId = found.id;
+    }
+    const deviceId = requireUuid(targetId, "device_id");
     const input = await parseJson(request, unassignDeviceSchema);
 
     const result = await withTransaction(async (client) => {
