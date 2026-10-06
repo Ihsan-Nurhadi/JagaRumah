@@ -8,6 +8,8 @@ services:
     ports:
       # Expose langsung port 701 ke publik
       - "701:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:

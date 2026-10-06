@@ -578,6 +578,7 @@ function StreamPreviewDialog({
   const [confirmed, setConfirmed] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [loadedFrame, setLoadedFrame] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open || !previewOpen || !streamUrl) return;
@@ -591,14 +592,16 @@ function StreamPreviewDialog({
       const requestedFrame = nextFrame;
       image.onload = () => {
         if (cancelled) return;
+        setLoadError(null);
         setLoadedFrame(requestedFrame);
         nextFrame += 1;
         timer = window.setTimeout(loadFrame, 2000);
       };
       image.onerror = () => {
         if (cancelled) return;
+        setLoadError("Gagal memuat feed kamera. Pastikan server stream aktif dan dapat dijangkau oleh server aplikasi.");
         nextFrame += 1;
-        timer = window.setTimeout(loadFrame, 2000);
+        timer = window.setTimeout(loadFrame, 3000);
       };
       image.src = `${streamUrl}?frame=${requestedFrame}`;
     };
@@ -612,12 +615,14 @@ function StreamPreviewDialog({
 
   function openPreview() {
     setLoadedFrame(null);
+    setLoadError(null);
     setPreviewOpen(true);
   }
 
   function close() {
     setConfirmed(false);
     setPreviewOpen(false);
+    setLoadError(null);
     onClose();
   }
 
@@ -665,8 +670,15 @@ function StreamPreviewDialog({
           <div className="flex flex-col gap-3">
             <div className="overflow-hidden rounded-lg border border-border bg-black">
               {loadedFrame === null ? (
-                <div className="flex aspect-video items-center justify-center text-sm text-white/70">
-                  Memuat frame CCTV…
+                <div className="flex aspect-video flex-col items-center justify-center gap-2 p-6 text-center text-sm text-white/80">
+                  {loadError ? (
+                    <>
+                      <div className="text-red-400 font-medium">Feed stream belum dapat dimuat</div>
+                      <p className="text-xs text-white/60 max-w-md">{loadError}</p>
+                    </>
+                  ) : (
+                    <div>Memuat frame CCTV…</div>
+                  )}
                 </div>
               ) : (
                 // eslint-disable-next-line @next/next/no-img-element
