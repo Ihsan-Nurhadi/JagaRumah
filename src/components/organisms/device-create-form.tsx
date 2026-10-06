@@ -187,6 +187,14 @@ export function DeviceCreateForm() {
             hint="Hanya bila perangkat memilikinya. Kamera yang tidak memakai kartu seluler biasanya tidak punya IMEI."
           />
 
+          <TextField<CreateDeviceInput>
+            control={control}
+            name="stream_url"
+            label="URL Stream / RTSP"
+            placeholder="Contoh: http://192.168.1.100:8080/video atau rtsp://..."
+            hint="Alamat feed video live CCTV (MJPEG atau RTSP). Boleh dikosongkan dan diatur belakangan."
+          />
+
           <div className="flex flex-col gap-1.5">
             <label htmlFor="warranty_start_at" className="text-[13px] font-medium">
               Tanggal mulai garansi

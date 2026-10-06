@@ -158,10 +158,13 @@ export const PATCH = routeHandler(
         mac_address: string | null;
         imei: string | null;
         warranty_start_at: Date | null;
+        stream_url: string | null;
       }>(
-        `SELECT id, name, model, hardware_revision, batch_number, mac_address, imei,
-                warranty_start_at
-         FROM devices WHERE id = $1 AND status <> 'deleted' FOR UPDATE`,
+        `SELECT d.id, d.name, d.model, d.hardware_revision, d.batch_number, d.mac_address, d.imei,
+                d.warranty_start_at, t.stream_url
+         FROM devices d
+         LEFT JOIN camera_telemetry t ON t.device_id = d.id
+         WHERE d.id = $1 AND d.status <> 'deleted' FOR UPDATE`,
         [deviceId],
         client,
       );
@@ -208,19 +211,51 @@ export const PATCH = routeHandler(
         };
       }
 
-      if (assignments.length === 0) {
+      if (input.stream_url !== undefined) {
+        const previousStream = before.stream_url;
+        changes["stream_url"] = {
+          from: previousStream,
+          to: input.stream_url,
+        };
+        if (input.stream_url) {
+          await client.query(
+            `INSERT INTO camera_telemetry (device_id, connection_status, recording_status, stream_url, last_seen_at)
+             VALUES ($1, 'active', 'not_recording', $2, now())
+             ON CONFLICT (device_id) DO UPDATE SET stream_url = EXCLUDED.stream_url, connection_status = 'active', updated_at = now()`,
+            [deviceId, input.stream_url],
+          );
+        } else {
+          await client.query(
+            `UPDATE camera_telemetry SET stream_url = NULL, updated_at = now() WHERE device_id = $1`,
+            [deviceId],
+          );
+        }
+      }
+
+      if (assignments.length === 0 && input.stream_url === undefined) {
         throw new AppError({
           code: "VALIDATION_ERROR",
           message: "Tidak ada perubahan yang dikirim. Isi minimal satu kolom lalu simpan.",
         });
       }
 
-      const updated = await queryOne<{ updated_at: Date }>(
-        `UPDATE devices SET ${assignments.join(", ")} WHERE id = $${params.push(deviceId)}
-         RETURNING updated_at`,
-        params,
-        client,
-      );
+      let updatedAt = new Date();
+      if (assignments.length > 0) {
+        const updated = await queryOne<{ updated_at: Date }>(
+          `UPDATE devices SET ${assignments.join(", ")}, updated_at = now() WHERE id = $${params.push(deviceId)}
+           RETURNING updated_at`,
+          params,
+          client,
+        );
+        updatedAt = updated?.updated_at ?? updatedAt;
+      } else {
+        const updated = await queryOne<{ updated_at: Date }>(
+          `UPDATE devices SET updated_at = now() WHERE id = $1 RETURNING updated_at`,
+          [deviceId],
+          client,
+        );
+        updatedAt = updated?.updated_at ?? updatedAt;
+      }
 
       await writeAudit(client, {
         actor: {
@@ -235,7 +270,7 @@ export const PATCH = routeHandler(
         newData: Object.fromEntries(Object.entries(changes).map(([key, v]) => [key, v.to])),
       });
 
-      return { updatedAt: updated?.updated_at ?? new Date() };
+      return { updatedAt };
     });
 
     return ok(

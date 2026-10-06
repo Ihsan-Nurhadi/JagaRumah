@@ -85,6 +85,13 @@ export const createDeviceSchema = z.object({
     .refine((value) => value === null || value === undefined || !Number.isNaN(Date.parse(value)), {
       message: "Tanggal mulai garansi tidak dikenali.",
     }),
+  stream_url: z
+    .string()
+    .trim()
+    .max(1000, "URL stream maksimal 1000 karakter.")
+    .transform((value) => (value === "" ? null : value))
+    .nullable()
+    .optional(),
 });
 
 export type CreateDeviceInput = z.infer<typeof createDeviceSchema>;
@@ -128,6 +135,13 @@ export const updateDeviceSchema = z
       .refine((value) => value === null || value === undefined || !Number.isNaN(Date.parse(value)), {
         message: "Tanggal mulai garansi tidak dikenali.",
       }),
+    stream_url: z
+      .string()
+      .trim()
+      .max(1000, "URL stream maksimal 1000 karakter.")
+      .transform((value) => (value === "" ? null : value))
+      .nullable()
+      .optional(),
   })
   /*
     Body kosong ditolak. Tanpa pemeriksaan ini, PATCH tanpa isi akan mengembalikan sukses
@@ -180,4 +194,5 @@ export const createDeviceDefaults: CreateDeviceInput = {
   mac_address: null,
   imei: null,
   warranty_start_at: null,
+  stream_url: null,
 };

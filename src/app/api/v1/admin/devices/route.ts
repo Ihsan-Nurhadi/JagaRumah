@@ -173,6 +173,7 @@ export const POST = routeHandler("admin.devices.create", async (request, request
       */
       warrantyStartAt: input.warranty_start_at ? new Date(input.warranty_start_at) : null,
       adminUserId: admin.identity.id,
+      streamUrl: input.stream_url ?? null,
     });
 
     /*

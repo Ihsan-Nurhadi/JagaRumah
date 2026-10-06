@@ -160,7 +160,7 @@ export function DeviceDetail({ deviceId }: { deviceId: string }) {
     claim_token: string;
     qr_payload: string;
   } | null>(null);
-  const [dialog, setDialog] = useState<"assign" | "unassign" | "rotate" | "stream" | null>(null);
+  const [dialog, setDialog] = useState<"assign" | "unassign" | "rotate" | "stream" | "edit-stream" | null>(null);
 
   if (query.status === "memuat") return <LoadingState label="Memuat data perangkat" />;
 
@@ -287,6 +287,7 @@ export function DeviceDetail({ deviceId }: { deviceId: string }) {
             <Row label="Nomor batch" value={device.batch_number ?? <BelumAda />} />
             <Row label="Alamat MAC" value={device.mac_address ? <span className="tabular">{device.mac_address}</span> : <BelumAda />} />
             <Row label="IMEI" value={device.imei ? <span className="tabular">{device.imei}</span> : <BelumAda />} />
+            <Row label="Stream URL" value={device.stream_url ? <span className="font-mono text-xs break-all">{device.stream_url}</span> : <BelumAda />} />
             <Row label="Mulai garansi" value={<Timestamp value={device.warranty_start_at} fallback="Tidak dicatat" />} />
             <Row label="Akhir garansi" value={<Timestamp value={device.warranty_ends_at} fallback="Tidak diketahui" />} />
             <Row
@@ -373,19 +374,34 @@ export function DeviceDetail({ deviceId }: { deviceId: string }) {
               Feed kamera hanya dibuka setelah konfirmasi karena dapat menampilkan area privat.
             </p>
           </div>
-          <Button
-            variant="secondary"
-            disabled={!liveStreamUrl}
-            onClick={() => setDialog("stream")}
-          >
-            Tampilkan preview
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setDialog("edit-stream")}
+            >
+              {liveStreamUrl ? "Ubah Stream URL" : "Atur Stream URL"}
+            </Button>
+            <Button
+              variant="secondary"
+              disabled={!liveStreamUrl}
+              onClick={() => setDialog("stream")}
+            >
+              Tampilkan preview
+            </Button>
+          </div>
         </div>
-        {!liveStreamUrl ? (
+        {liveStreamUrl ? (
+          <div className="flex flex-col gap-1 text-[13px]">
+            <span className="text-muted-foreground font-medium">Alamat Stream Terdaftar:</span>
+            <code className="bg-muted text-foreground rounded px-2 py-1 font-mono text-xs break-all">
+              {liveStreamUrl}
+            </code>
+          </div>
+        ) : (
           <p className="text-muted-foreground text-[13px]">
-            Perangkat ini belum memiliki sumber stream CCTV.
+            Perangkat ini belum memiliki sumber stream CCTV. Klik tombol &ldquo;Atur Stream URL&rdquo; di atas untuk menghubungkan feed video.
           </p>
-        ) : null}
+        )}
       </section>
 
       <section className="flex flex-col gap-3 rounded-xl border border-border p-4">
@@ -490,6 +506,17 @@ export function DeviceDetail({ deviceId }: { deviceId: string }) {
         streamUrl={device.stream_url ? `/api/v1/admin/devices/${deviceId}/stream` : null}
         deviceName={device.name ?? device.device_uid}
         onClose={() => setDialog(null)}
+      />
+
+      <EditStreamDialog
+        open={dialog === "edit-stream"}
+        deviceId={deviceId}
+        currentStreamUrl={device.stream_url}
+        onClose={() => setDialog(null)}
+        onDone={() => {
+          setDialog(null);
+          query.reload();
+        }}
       />
 
       <AssignDialog
@@ -880,6 +907,108 @@ function ReasonDialog({
             <Button type="submit" disabled={isSubmitting}>
               {isSubmitting ? <Spinner label="Memproses" /> : null}
               {submitLabel}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+const editStreamFormSchema = z.object({
+  stream_url: z
+    .string()
+    .trim()
+    .max(1000, "URL maksimal 1000 karakter.")
+    .transform((v) => (v === "" ? null : v))
+    .nullable(),
+});
+
+type EditStreamFormValues = {
+  stream_url: string | null;
+};
+
+function EditStreamDialog({
+  open,
+  deviceId,
+  currentStreamUrl,
+  onClose,
+  onDone,
+}: {
+  open: boolean;
+  deviceId: string;
+  currentStreamUrl: string | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const {
+    control,
+    handleSubmit,
+    reset,
+    formState: { isSubmitting },
+  } = useForm<EditStreamFormValues>({
+    resolver: zodResolver(editStreamFormSchema),
+    defaultValues: { stream_url: currentStreamUrl ?? "" },
+  });
+
+  useEffect(() => {
+    if (open) {
+      reset({ stream_url: currentStreamUrl ?? "" });
+    }
+  }, [open, currentStreamUrl, reset]);
+
+  async function submit(values: EditStreamFormValues) {
+    try {
+      await mutate(`/api/v1/admin/devices/${deviceId}`, {
+        method: "PATCH",
+        body: { stream_url: values.stream_url },
+      });
+      notifySuccess(
+        "Stream URL diperbarui",
+        values.stream_url
+          ? "Sumber stream CCTV berhasil disimpan."
+          : "Sumber stream CCTV berhasil dikosongkan.",
+      );
+      onDone();
+    } catch (error) {
+      notifyError("Gagal menyimpan stream URL", toErrorMessage(error));
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) {
+          reset();
+          onClose();
+        }
+      }}
+    >
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Atur URL Stream / RTSP</DialogTitle>
+          <DialogDescription>
+            Masukkan URL stream video live untuk perangkat CCTV ini. Mendukung protokol RTSP maupun HTTP MJPEG stream.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form noValidate onSubmit={handleSubmit(submit)} className="flex flex-col gap-4">
+          <TextField<EditStreamFormValues>
+            control={control}
+            name="stream_url"
+            label="URL Stream / RTSP"
+            placeholder="rtsp://admin:pass@ip:port/stream atau http://ip:port/video"
+            hint="Kosongkan jika ingin mencabut sumber stream dari perangkat ini."
+          />
+
+          <DialogFooter>
+            <Button type="button" variant="secondary" onClick={onClose} disabled={isSubmitting}>
+              Batal
+            </Button>
+            <Button type="submit" disabled={isSubmitting}>
+              {isSubmitting ? <Spinner label="Menyimpan" /> : null}
+              {isSubmitting ? "Menyimpan..." : "Simpan Stream URL"}
             </Button>
           </DialogFooter>
         </form>

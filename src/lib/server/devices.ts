@@ -221,6 +221,7 @@ export async function registerDevice(
     imei: string | null;
     warrantyStartAt: Date | null;
     adminUserId: string;
+    streamUrl?: string | null;
   },
 ): Promise<{ deviceId: string; deviceUid: string; claimToken: string }> {
   /*
@@ -263,6 +264,15 @@ export async function registerDevice(
     client,
   );
   if (!device) throw new Error("Penyisipan perangkat tidak mengembalikan baris.");
+
+  if (input.streamUrl) {
+    await client.query(
+      `INSERT INTO camera_telemetry (device_id, connection_status, recording_status, stream_url, last_seen_at)
+       VALUES ($1, 'active', 'not_recording', $2, now())
+       ON CONFLICT (device_id) DO UPDATE SET stream_url = EXCLUDED.stream_url, connection_status = 'active', updated_at = now()`,
+      [device.id, input.streamUrl],
+    );
+  }
 
   const claimToken = await issueClaimCode(client, device.id);
 
