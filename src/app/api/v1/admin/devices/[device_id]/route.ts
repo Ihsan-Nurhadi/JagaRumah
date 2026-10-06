@@ -158,13 +158,10 @@ export const PATCH = routeHandler(
         mac_address: string | null;
         imei: string | null;
         warranty_start_at: Date | null;
-        stream_url: string | null;
       }>(
-        `SELECT d.id, d.name, d.model, d.hardware_revision, d.batch_number, d.mac_address, d.imei,
-                d.warranty_start_at, t.stream_url
-         FROM devices d
-         LEFT JOIN camera_telemetry t ON t.device_id = d.id
-         WHERE d.id = $1 AND d.status <> 'deleted' FOR UPDATE`,
+        `SELECT id, name, model, hardware_revision, batch_number, mac_address, imei,
+                warranty_start_at
+         FROM devices WHERE id = $1 AND status <> 'deleted' FOR UPDATE`,
         [deviceId],
         client,
       );
@@ -212,7 +209,12 @@ export const PATCH = routeHandler(
       }
 
       if (input.stream_url !== undefined) {
-        const previousStream = before.stream_url;
+        const currentTel = await queryOne<{ stream_url: string | null }>(
+          "SELECT stream_url FROM camera_telemetry WHERE device_id = $1",
+          [deviceId],
+          client,
+        );
+        const previousStream = currentTel?.stream_url ?? null;
         changes["stream_url"] = {
           from: previousStream,
           to: input.stream_url,
