@@ -243,6 +243,17 @@ export async function createCustomer(
     providers.push("whatsapp");
   }
 
+  await client.query(
+    `INSERT INTO subscriptions (customer_id, plan_id, plan_price_id, status, started_at, current_period_start, current_period_end)
+     SELECT $1, p.id, pr.id, 'active', now(), now(), NULL
+     FROM subscription_plans p
+     LEFT JOIN plan_prices pr ON pr.plan_id = p.id AND pr.billing_interval = 'monthly'
+     WHERE p.code = 'free'
+     LIMIT 1
+     ON CONFLICT DO NOTHING`,
+    [customer.id],
+  );
+
   return {
     id: customer.id,
     full_name: input.full_name,

@@ -75,6 +75,13 @@ export function csrfSecret(): string {
   );
 }
 
+export function googleClientId(): string {
+  return required(
+    "GOOGLE_CLIENT_ID",
+    "Isi dengan Web Client ID dari Google Cloud Console.",
+  );
+}
+
 // Umur token mengikuti tabel di API_Contract.md bagian JWT, cookie, dan security.
 export const ADMIN_ACCESS_TTL_SECONDS = 15 * 60;
 export const ADMIN_REFRESH_TTL_SECONDS = 8 * 60 * 60;

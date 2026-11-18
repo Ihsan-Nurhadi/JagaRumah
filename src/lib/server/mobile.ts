@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from "node:crypto";
+import { OAuth2Client } from "google-auth-library";
 import { z } from "zod";
 import { query, queryOne, withTransaction, type Queryable } from "./db";
 import { AppError } from "./errors";
 import { clientIp } from "./request";
-import { jwtCustomerAccessSecret } from "./config";
+import { googleClientId, jwtCustomerAccessSecret } from "./config";
 import { hashPassword, verifyPassword } from "./password";
 import { sendPasswordResetEmail } from "./mobile-mailer";
 import { passwordProblem } from "@/lib/password-rules";
@@ -22,6 +23,12 @@ export const mobileLoginSchema = z.object({
   installation_id: z.string().trim().min(1).max(200),
   platform: z.enum(["ios", "android"]),
   app_version: z.string().trim().min(1).max(50),
+});
+export const mobileGoogleLoginSchema = z.object({
+  id_token: z.string().trim().min(20, "ID token tidak valid."),
+  installation_id: z.string().trim().min(1).max(200),
+  platform: z.enum(["ios", "android"]).default("android"),
+  app_version: z.string().trim().min(1).max(50).default("1.0.0"),
 });
 export const forgotPasswordSchema = z.object({ email: z.string().trim().toLowerCase().email().max(254) });
 export const resetPasswordSchema = z.object({
@@ -91,6 +98,16 @@ export async function mobileRegister(input: z.infer<typeof mobileRegisterSchema>
     const customer = await queryOne<{ id: string }>("INSERT INTO customers (full_name,status) VALUES ($1,'active') RETURNING id", [input.full_name], client);
     if (!customer) throw new Error("customer insert failed");
     await client.query("INSERT INTO customer_auth_accounts (customer_id,provider,email,password_hash,is_verified,verified_at) VALUES ($1,'email',$2,$3,true,now())", [customer.id, input.email, await hashPassword(input.password)]);
+    await client.query(
+      `INSERT INTO subscriptions (customer_id, plan_id, plan_price_id, status, started_at, current_period_start, current_period_end)
+       SELECT $1, p.id, pr.id, 'active', now(), now(), NULL
+       FROM subscription_plans p
+       LEFT JOIN plan_prices pr ON pr.plan_id = p.id AND pr.billing_interval = 'monthly'
+       WHERE p.code = 'free'
+       LIMIT 1
+       ON CONFLICT DO NOTHING`,
+      [customer.id],
+    );
     return customer.id;
   });
   return { ...(await issueSession(customerId, input)), customer: await customerPayload(customerId, input.email), onboarding_required: false };
@@ -104,6 +121,136 @@ export async function mobileLogin(input: z.infer<typeof mobileLoginSchema>) {
   if (account.status !== "active") throw new AppError({ code: "INVALID_CREDENTIALS", message: "Akun customer tidak aktif." });
   await query("UPDATE customer_auth_accounts SET last_login_at=now() WHERE customer_id=$1 AND provider='email'", [account.customer_id]);
   return { ...(await issueSession(account.customer_id, input)), customer: { id: account.customer_id, full_name: account.full_name, email: input.email, avatar_url: account.avatar_url, status: account.status }, onboarding_required: false };
+}
+
+let googleClientInstance: OAuth2Client | null = null;
+function getGoogleClient(): OAuth2Client {
+  if (!googleClientInstance) {
+    googleClientInstance = new OAuth2Client(googleClientId());
+  }
+  return googleClientInstance;
+}
+
+export async function verifyGoogleIdToken(idToken: string) {
+  const clientId = googleClientId();
+  try {
+    const client = getGoogleClient();
+    const ticket = await client.verifyIdToken({
+      idToken,
+      audience: clientId,
+    });
+    const payload = ticket.getPayload();
+    if (!payload || !payload.sub || !payload.email) {
+      throw new Error("Payload token Google tidak lengkap.");
+    }
+    return {
+      googleSubject: payload.sub,
+      email: payload.email.toLowerCase().trim(),
+      fullName: payload.name || "Pengguna Google",
+      avatarUrl: payload.picture || null,
+      isEmailVerified: payload.email_verified || false,
+    };
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError({
+      code: "GOOGLE_TOKEN_INVALID",
+      message: "Token Google tidak sah atau sudah kedaluwarsa.",
+    });
+  }
+}
+
+export async function mobileGoogleLogin(input: z.infer<typeof mobileGoogleLoginSchema>) {
+  const googleUser = await verifyGoogleIdToken(input.id_token);
+
+  const customerId = await withTransaction(async (client) => {
+    // 1. Cek apakah akun Google sudah terdaftar
+    const existingGoogle = await queryOne<{ customer_id: string }>(
+      "SELECT customer_id FROM customer_auth_accounts WHERE provider = 'google' AND provider_subject = $1 FOR UPDATE",
+      [googleUser.googleSubject],
+      client,
+    );
+
+    if (existingGoogle) {
+      await client.query(
+        "UPDATE customer_auth_accounts SET last_login_at = now() WHERE provider = 'google' AND provider_subject = $1",
+        [googleUser.googleSubject],
+      );
+      return existingGoogle.customer_id;
+    }
+
+    // 2. Cek apakah ada akun customer yang memakai email yang sama
+    const existingEmail = await queryOne<{ customer_id: string }>(
+      "SELECT customer_id FROM customer_auth_accounts WHERE email = $1 LIMIT 1 FOR UPDATE",
+      [googleUser.email],
+      client,
+    );
+
+    if (existingEmail) {
+      // Hubungkan akun Google ke customer yang sudah ada
+      // Catatan: email di-set NULL agar tidak melanggar unique constraint customer_auth_accounts_email_key
+      await client.query(
+        `INSERT INTO customer_auth_accounts (customer_id, provider, provider_subject, email, is_verified, verified_at, last_login_at)
+         VALUES ($1, 'google', $2, NULL, true, now(), now())`,
+        [existingEmail.customer_id, googleUser.googleSubject],
+      );
+      return existingEmail.customer_id;
+    }
+
+    // 3. Buat customer baru jika belum pernah terdaftar
+    const newCustomer = await queryOne<{ id: string }>(
+      "INSERT INTO customers (full_name, avatar_url, status) VALUES ($1, $2, 'active') RETURNING id",
+      [googleUser.fullName, googleUser.avatarUrl],
+      client,
+    );
+    if (!newCustomer) throw new Error("Gagal membuat data customer baru.");
+
+    await client.query(
+      `INSERT INTO customer_auth_accounts (customer_id, provider, provider_subject, email, is_verified, verified_at, last_login_at)
+       VALUES ($1, 'google', $2, $3, true, now(), now())`,
+      [newCustomer.id, googleUser.googleSubject, googleUser.email],
+    );
+
+    // Berikan langganan default free plan
+    await client.query(
+      `INSERT INTO subscriptions (customer_id, plan_id, plan_price_id, status, started_at, current_period_start, current_period_end)
+       SELECT $1, p.id, pr.id, 'active', now(), now(), NULL
+       FROM subscription_plans p
+       LEFT JOIN plan_prices pr ON pr.plan_id = p.id AND pr.billing_interval = 'monthly'
+       WHERE p.code = 'free'
+       LIMIT 1
+       ON CONFLICT DO NOTHING`,
+      [newCustomer.id],
+    );
+
+    return newCustomer.id;
+  });
+
+  const customer = await queryOne<{ id: string; status: string; full_name: string; avatar_url: string | null }>(
+    "SELECT id, status, full_name, avatar_url FROM customers WHERE id = $1",
+    [customerId],
+  );
+  if (!customer || customer.status === "deleted") {
+    throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Customer tidak ditemukan." });
+  }
+  if (customer.status === "suspended") {
+    throw new AppError({ code: "CUSTOMER_SUSPENDED", message: "Akun customer ditangguhkan." });
+  }
+  if (customer.status !== "active") {
+    throw new AppError({ code: "INVALID_CREDENTIALS", message: "Akun customer tidak aktif." });
+  }
+
+  const session = await issueSession(customerId, input);
+  return {
+    ...session,
+    customer: {
+      id: customer.id,
+      full_name: customer.full_name,
+      email: googleUser.email,
+      avatar_url: customer.avatar_url,
+      status: customer.status,
+    },
+    onboarding_required: false,
+  };
 }
 
 export async function forgotPassword(input: z.infer<typeof forgotPasswordSchema>) {

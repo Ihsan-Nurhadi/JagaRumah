@@ -52,6 +52,7 @@ GET /api/v1/mobile/help/{article_id}
 GET /api/v1/mobile/terms
 POST /api/v1/mobile/auth/register
 POST /api/v1/mobile/auth/login
+POST /api/v1/mobile/auth/google
 POST /api/v1/mobile/auth/forgot-password
 POST /api/v1/mobile/auth/reset-password
 ```
@@ -163,7 +164,28 @@ Response `200` memakai bentuk token dan customer yang sama seperti register.
 Email tidak terdaftar, password salah, dan account tidak aktif tidak boleh dibedakan secara
 berlebihan oleh client. Kode normalnya `INVALID_CREDENTIALS`.
 
-### 3.3 Lupa password melalui Mailtrap
+### 3.3 Login Google
+
+```http
+POST /api/v1/mobile/auth/google
+```
+
+Request:
+
+```json
+{
+  "id_token": "google-id-token-jwt",
+  "installation_id": "mobile-installation-uuid",
+  "platform": "android",
+  "app_version": "1.0.0"
+}
+```
+
+Response `200` memakai bentuk token dan customer yang sama seperti login email/password.
+Jika pengguna belum terdaftar, akun customer dan subscription free otomatis dibuat di latar belakang (auto-registration).
+Jika email sudah terdaftar sebelumnya melalui register biasa, akun Google akan otomatis ditautkan ke customer yang ada.
+
+### 3.4 Lupa password melalui Mailtrap
 
 ```http
 POST /api/v1/mobile/auth/forgot-password

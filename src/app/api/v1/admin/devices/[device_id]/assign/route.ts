@@ -124,7 +124,28 @@ export const POST = routeHandler(
         pelanggan yang sama tidak bisa sama-sama lolos hanya karena keduanya membaca jumlah
         perangkat sebelum salah satunya menulis.
       */
-      const limit = await deviceLimitFor(customer.id, client);
+      let limit = await deviceLimitFor(customer.id, client);
+      if (!limit) {
+        const anySub = await queryOne<{ id: string }>(
+          "SELECT id FROM subscriptions WHERE customer_id = $1 LIMIT 1",
+          [customer.id],
+          client,
+        );
+        if (!anySub) {
+          await client.query(
+            `INSERT INTO subscriptions (customer_id, plan_id, plan_price_id, status, started_at, current_period_start, current_period_end)
+             SELECT $1, p.id, pr.id, 'active', now(), now(), NULL
+             FROM subscription_plans p
+             LEFT JOIN plan_prices pr ON pr.plan_id = p.id AND pr.billing_interval = 'monthly'
+             WHERE p.code = 'free'
+             LIMIT 1
+             ON CONFLICT DO NOTHING`,
+            [customer.id],
+          );
+          limit = await deviceLimitFor(customer.id, client);
+        }
+      }
+
       if (!limit) {
         throw new AppError({
           code: "ACTIVE_SUBSCRIPTION_REQUIRED",
