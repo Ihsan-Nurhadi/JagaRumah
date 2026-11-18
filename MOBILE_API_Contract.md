@@ -52,7 +52,6 @@ GET /api/v1/mobile/help/{article_id}
 GET /api/v1/mobile/terms
 POST /api/v1/mobile/auth/register
 POST /api/v1/mobile/auth/login
-POST /api/v1/mobile/auth/google
 POST /api/v1/mobile/auth/forgot-password
 POST /api/v1/mobile/auth/reset-password
 ```
@@ -164,28 +163,7 @@ Response `200` memakai bentuk token dan customer yang sama seperti register.
 Email tidak terdaftar, password salah, dan account tidak aktif tidak boleh dibedakan secara
 berlebihan oleh client. Kode normalnya `INVALID_CREDENTIALS`.
 
-### 3.3 Login Google
-
-```http
-POST /api/v1/mobile/auth/google
-```
-
-Request:
-
-```json
-{
-  "id_token": "google-id-token-jwt",
-  "installation_id": "mobile-installation-uuid",
-  "platform": "android",
-  "app_version": "1.0.0"
-}
-```
-
-Response `200` memakai bentuk token dan customer yang sama seperti login email/password.
-Jika pengguna belum terdaftar, akun customer dan subscription free otomatis dibuat di latar belakang (auto-registration).
-Jika email sudah terdaftar sebelumnya melalui register biasa, akun Google akan otomatis ditautkan ke customer yang ada.
-
-### 3.4 Lupa password melalui Mailtrap
+### 3.3 Lupa password melalui Mailtrap
 
 ```http
 POST /api/v1/mobile/auth/forgot-password
@@ -287,16 +265,53 @@ GET /api/v1/mobile/dashboard
 Mengembalikan jumlah kamera total, active, recording, offline, unknown, alert unread, kamera aktif
 terbaru, dan alert terbaru.
 
-## 5. Camera API
+## 5. Camera & Device API
 
 ```http
-GET /api/v1/mobile/cameras
-GET /api/v1/mobile/cameras/{camera_id}
+GET  /api/v1/mobile/cameras
+GET  /api/v1/mobile/cameras/{camera_id}
+GET  /api/v1/mobile/cameras/{camera_id}/stream
+POST /api/v1/mobile/devices/claim
 ```
 
-List mendukung filter `status`, `recording_status`, `q`, `limit`, dan `cursor`. Status koneksi dan
-status recording berasal dari `camera_telemetry`; status lifecycle pada `devices` tidak dipetakan
-menjadi online.
+### 5.1 Klaim Perangkat (CCTV)
+
+```http
+POST /api/v1/mobile/devices/claim
+```
+
+Request:
+
+```json
+{
+  "code": "NYK-7842-ABCD-1234"
+}
+```
+
+Mengklaim perangkat yang berstatus `in_stock` berdasarkan kode unik dari label/admin.
+Jika kode sah dan kuota paket langganan customer mencukupi, perangkat otomatis terikat ke akun customer dan muncul di daftar kamera.
+
+### 5.2 Stream Kamera (Low-Latency WebRTC & RTSP)
+
+```http
+GET /api/v1/mobile/cameras/{camera_id}/stream
+```
+
+Response `200`:
+
+```json
+{
+  "data": {
+    "camera_id": "device-uuid",
+    "camera_name": "Kamera Depan",
+    "stream_key": "cam-tplink-c500-xxx",
+    "webrtc_url": "http://stream.nayakacloud.com:8889/cam-tplink-c500-xxx/whep",
+    "rtsp_url": "rtsp://stream.nayakacloud.com:8554/cam-tplink-c500-xxx",
+    "hls_url": "http://stream.nayakacloud.com:8888/cam-tplink-c500-xxx/index.m3u8"
+  },
+  "meta": { "request_id": "request-uuid" }
+}
+```
 
 ## 6. Alert API
 

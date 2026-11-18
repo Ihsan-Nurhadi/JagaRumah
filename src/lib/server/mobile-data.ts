@@ -46,6 +46,28 @@ export async function cameraDetail(customerId: string, cameraId: string) {
   return { camera: { ...row, thumbnail_expires_at:date(row.thumbnail_expires_at), stream_url: row.stream_url, last_seen_at:date(row.last_seen_at), latest_alert_at:date(row.latest_alert_at), latest_recording_at:date(row.latest_recording_at) } };
 }
 
+export async function cameraStreamUrls(customerId: string, cameraId: string) {
+  const row = await queryOne<{ id: string; name: string; serial_number: string; stream_url: string | null }>(
+    `SELECT d.id, d.name, d.serial_number, t.stream_url
+     FROM devices d
+     LEFT JOIN camera_telemetry t ON t.device_id = d.id
+     WHERE d.id = $1 AND d.customer_id = $2 AND d.status IN ('claimed','suspended')`,
+    [cameraId, customerId],
+  );
+  if (!row) throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Kamera tidak ditemukan." });
+
+  const streamKey = `cam-${row.serial_number.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+  return {
+    camera_id: row.id,
+    camera_name: row.name,
+    stream_key: streamKey,
+    rtsp_url: `rtsp://stream.nayakacloud.com:8554/${streamKey}`,
+    webrtc_url: `http://dev.nayakacloud.com:8889/${streamKey}/whep`,
+    hls_url: `http://dev.nayakacloud.com:8888/${streamKey}/index.m3u8`,
+    upstream_url: row.stream_url,
+  };
+}
+
 export async function alertList(customerId: string, params: z.infer<typeof pageSchema>) {
   const values: unknown[] = [customerId]; const where = ["d.customer_id=$1"];
   if (params.camera_id) { values.push(params.camera_id); where.push(`a.device_id=$${values.length}::uuid`); }

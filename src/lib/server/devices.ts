@@ -14,12 +14,14 @@
 import type { PoolClient } from "pg";
 
 import { AppError } from "./errors";
-import { query, queryOne, type Queryable } from "./db";
+import { query, queryOne, withTransaction, type Queryable } from "./db";
 import {
   claimQrPayload,
   formatClaimToken,
   generateClaimToken,
   hashClaimToken,
+  maskSubmittedValue,
+  normalizeClaimToken,
 } from "./claim-code";
 
 /*
@@ -446,5 +448,138 @@ export function assertWithinDeviceLimit(state: {
       active_device_count: state.activeCount,
       plan_name: state.planName,
     },
+  });
+}
+
+export async function claimDeviceByCode(
+  customerId: string,
+  rawCode: string,
+  clientIp?: string,
+  userAgent?: string,
+): Promise<{ deviceId: string; deviceName: string; serialNumber: string; model: string | null }> {
+  const normalized = normalizeClaimToken(rawCode);
+  const codeHash = hashClaimToken(normalized);
+  const maskedValue = maskSubmittedValue("qr", rawCode);
+
+  return withTransaction(async (client) => {
+    // 1. Cari kode claim
+    const claim = await queryOne<{
+      id: string;
+      device_id: string;
+      expires_at: Date | null;
+      used_at: Date | null;
+      device_status: string;
+      device_name: string;
+      serial_number: string;
+      model: string | null;
+    }>(
+      `SELECT cc.id, cc.device_id, cc.expires_at, cc.used_at,
+              d.status AS device_status, d.name AS device_name,
+              d.serial_number, d.model
+       FROM device_claim_codes cc
+       JOIN devices d ON d.id = cc.device_id
+       WHERE cc.code_hash = $1
+       FOR UPDATE`,
+      [codeHash],
+      client,
+    );
+
+    if (!claim) {
+      await client.query(
+        `INSERT INTO device_claim_attempts (customer_id, submitted_kind, submitted_value_masked, ip_address, user_agent, success, failure_reason)
+         VALUES ($1, 'qr', $2, $3, $4, false, 'Kode claim tidak ditemukan.')`,
+        [customerId, maskedValue, clientIp ?? null, userAgent ?? null],
+      );
+      throw new AppError({
+        code: "CLAIM_TOKEN_INVALID",
+        message: "Kode klaim tidak valid atau salah. Periksa kembali kode pada perangkat Anda.",
+      });
+    }
+
+    if (claim.used_at !== null) {
+      await client.query(
+        `INSERT INTO device_claim_attempts (device_id, customer_id, submitted_kind, submitted_value_masked, ip_address, user_agent, success, failure_reason)
+         VALUES ($1, $2, 'qr', $3, $4, false, 'Kode claim sudah pernah dipakai.')`,
+        [claim.device_id, customerId, maskedValue, clientIp ?? null, userAgent ?? null],
+      );
+      throw new AppError({
+        code: "CLAIM_TOKEN_INVALID",
+        message: "Kode klaim ini sudah pernah digunakan.",
+      });
+    }
+
+    if (claim.expires_at && claim.expires_at.getTime() <= Date.now()) {
+      await client.query(
+        `INSERT INTO device_claim_attempts (device_id, customer_id, submitted_kind, submitted_value_masked, ip_address, user_agent, success, failure_reason)
+         VALUES ($1, $2, 'qr', $3, $4, false, 'Kode claim sudah kedaluwarsa.')`,
+        [claim.device_id, customerId, maskedValue, clientIp ?? null, userAgent ?? null],
+      );
+      throw new AppError({
+        code: "CLAIM_TOKEN_INVALID",
+        message: "Kode klaim ini sudah kedaluwarsa.",
+      });
+    }
+
+    if (claim.device_status !== "in_stock") {
+      throw new AppError({
+        code: "DEVICE_ALREADY_CLAIMED",
+        message: "Perangkat ini sudah diklaim oleh akun lain atau sedang tidak aktif.",
+      });
+    }
+
+    // 2. Periksa batas kuota perangkat pada langganan customer
+    let limit = await deviceLimitFor(customerId, client);
+    if (!limit) {
+      await client.query(
+        `INSERT INTO subscriptions (customer_id, plan_id, plan_price_id, status, started_at, current_period_start, current_period_end)
+         SELECT $1, p.id, pr.id, 'active', now(), now(), NULL
+         FROM subscription_plans p
+         LEFT JOIN plan_prices pr ON pr.plan_id = p.id AND pr.billing_interval = 'monthly'
+         WHERE p.code = 'free'
+         LIMIT 1
+         ON CONFLICT DO NOTHING`,
+        [customerId],
+      );
+      limit = await deviceLimitFor(customerId, client);
+    }
+
+    if (limit) {
+      assertWithinDeviceLimit(limit);
+    }
+
+    // 3. Kaitkan perangkat ke customer
+    await client.query(
+      `UPDATE devices
+       SET customer_id = $1,
+           status = 'claimed',
+           claim_method = 'qr',
+           claimed_at = now(),
+           activated_at = COALESCE(activated_at, now())
+       WHERE id = $2`,
+      [customerId, claim.device_id],
+    );
+
+    // 4. Tandai kode claim telah digunakan
+    await client.query(
+      `UPDATE device_claim_codes
+       SET used_at = now(),
+           used_by_customer_id = $1
+       WHERE id = $2`,
+      [customerId, claim.id],
+    );
+
+    // 5. Catat riwayat klaim
+    await client.query(
+      `INSERT INTO device_claim_attempts (device_id, customer_id, submitted_kind, submitted_value_masked, ip_address, user_agent, success)
+       VALUES ($1, $2, 'qr', $3, $4, true)`,
+      [claim.device_id, customerId, maskedValue, clientIp ?? null, userAgent ?? null],
+    );
+
+    return {
+      deviceId: claim.device_id,
+      deviceName: claim.device_name,
+      serialNumber: claim.serial_number,
+      model: claim.model,
+    };
   });
 }

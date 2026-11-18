@@ -1,0 +1,44 @@
+# MediaMTX Configuration - Nayaka CCTV Gateway
+# Digunakan untuk me-relay RTSP Tapo C500 (dari OpenVPN) menjadi WebRTC / RTSP Low-Latency
+
+logLevel: info
+logDestinations: [stdout]
+
+# ── 1. RTSP Server ──────────────────────────────────────────────────────────
+rtsp: yes
+rtspAddress: :8554
+protocols: [tcp]
+
+# ── 2. WebRTC Server (Latensi Super Rendah ~0.2 - 0.5s) ────────────────────
+webrtc: yes
+webrtcAddress: :8889
+webrtcEncryption: no
+# Port UDP untuk transmisi media WebRTC (buka port ini di firewall VPS jika aktif)
+webrtcLocalUDPAddress: :8189
+# Isi dengan IP Publik VPS Anda (atau domain misal: cctv.domainanda.com)
+webrtcAdditionalHosts: []
+
+# ── 3. HLS Server (Low-Latency HLS sebagai fallback) ───────────────────────
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsSegmentCount: 3
+hlsSegmentDuration: 1s
+
+# ── 4. API Control (Untuk registrasi stream dinamis) ────────────────────────
+api: yes
+apiAddress: :9997
+
+# ── 5. Paths (Stream Kamera) ────────────────────────────────────────────────
+paths:
+  # Konfigurasi kamera Tapo C500 (Contoh: cam-1)
+  # sourceOnDemand: yes memastikan stream RTSP ke Tapo hanya ditarik saat ada user yang menonton
+  # sehingga menghemat kuota & bandwidth OpenVPN.
+  tapo-sample:
+    source: rtsp://admin:password@10.8.0.50:554/stream1
+    sourceOnDemand: yes
+    sourceOnDemandCloseAfter: 10s
+
+  # Path fleksibel untuk semua stream yang didaftarkan lewat API atau URL
+  all_others:
+    sourceOnDemand: yes
