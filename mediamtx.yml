@@ -7,7 +7,7 @@ logDestinations: [stdout]
 # ── 1. RTSP Server ──────────────────────────────────────────────────────────
 rtsp: yes
 rtspAddress: :8554
-protocols: [tcp]
+rtspTransports: [tcp]
 
 # ── 2. WebRTC Server (Latensi Super Rendah ~0.2 - 0.5s) ────────────────────
 webrtc: yes
@@ -22,7 +22,7 @@ webrtcAdditionalHosts: []
 hls: yes
 hlsAddress: :8888
 hlsVariant: lowLatency
-hlsSegmentCount: 3
+hlsSegmentCount: 7
 hlsSegmentDuration: 1s
 
 # ── 4. API Control (Untuk registrasi stream dinamis) ────────────────────────

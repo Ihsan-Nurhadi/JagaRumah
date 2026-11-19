@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { findDevice } from "@/lib/server/devices";
 import { readFirstJpeg } from "@/lib/server/camera-stream";
 import { AppError } from "@/lib/server/errors";
@@ -6,6 +7,43 @@ import { requireUuid } from "@/lib/server/request";
 import { routeHandler } from "@/lib/server/route";
 
 type Params = { params: Promise<{ device_id?: string }> };
+
+async function captureRtspFrame(rtspUrl: string): Promise<Buffer | null> {
+  return new Promise((resolve) => {
+    try {
+      const proc = spawn(
+        "ffmpeg",
+        [
+          "-rtsp_transport",
+          "tcp",
+          "-i",
+          rtspUrl,
+          "-vframes",
+          "1",
+          "-f",
+          "image2",
+          "-q:v",
+          "3",
+          "pipe:1",
+        ],
+        { timeout: 3500 },
+      );
+
+      const chunks: Buffer[] = [];
+      proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
+      proc.on("error", () => resolve(null));
+      proc.on("close", (code) => {
+        if (code === 0 && chunks.length > 0) {
+          resolve(Buffer.concat(chunks));
+        } else {
+          resolve(null);
+        }
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+}
 
 export const GET = routeHandler("admin.devices.stream", async (_request, _requestId, context) => {
   const admin = await requireAdmin();
@@ -17,6 +55,25 @@ export const GET = routeHandler("admin.devices.stream", async (_request, _reques
 
   if (!device || !device.stream_url) {
     throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Stream CCTV tidak ditemukan." });
+  }
+
+  // Jika stream URL adalah RTSP (misal Tapo C500 via OpenVPN), tangkap frame langsung via FFmpeg
+  if (device.stream_url.startsWith("rtsp://")) {
+    const frame = await captureRtspFrame(device.stream_url);
+    if (!frame) {
+      throw new AppError({
+        code: "INTERNAL_ERROR",
+        message: "Stream RTSP CCTV tidak dapat dijangkau dari server (koneksi timeout atau ditolak oleh kamera). Pastikan kredensial username/password kamera benar.",
+      });
+    }
+    return new Response(new Uint8Array(frame), {
+      status: 200,
+      headers: {
+        "Content-Type": "image/jpeg",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        Pragma: "no-cache",
+      },
+    });
   }
 
   const candidateUrls = [device.stream_url];
