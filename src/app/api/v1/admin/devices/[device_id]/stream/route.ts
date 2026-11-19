@@ -14,8 +14,12 @@ async function captureRtspFrame(rtspUrl: string): Promise<Buffer | null> {
       const proc = spawn(
         "ffmpeg",
         [
+          "-loglevel",
+          "error",
           "-rtsp_transport",
           "tcp",
+          "-timeout",
+          "6000000",
           "-i",
           rtspUrl,
           "-vframes",
@@ -26,16 +30,26 @@ async function captureRtspFrame(rtspUrl: string): Promise<Buffer | null> {
           "3",
           "pipe:1",
         ],
-        { timeout: 3500 },
+        { timeout: 9000 },
       );
 
       const chunks: Buffer[] = [];
+      let stderr = "";
       proc.stdout.on("data", (chunk: Buffer) => chunks.push(chunk));
-      proc.on("error", () => resolve(null));
+      proc.stderr.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString();
+      });
+      proc.on("error", (err) => {
+        console.error("[admin.devices.stream] ffmpeg gagal dijalankan:", err.message);
+        resolve(null);
+      });
       proc.on("close", (code) => {
         if (code === 0 && chunks.length > 0) {
           resolve(Buffer.concat(chunks));
         } else {
+          // Hilangkan kredensial dari log.
+          const safe = stderr.replace(/rtsp:\/\/[^@\s]*@/g, "rtsp://***@").slice(0, 500);
+          console.error(`[admin.devices.stream] ffmpeg exit ${code}: ${safe}`);
           resolve(null);
         }
       });
