@@ -1,3 +1,6 @@
+import { queryOne } from "@/lib/server/db";
+import { ensureMediamtxPath } from "@/lib/server/mobile-data";
+
 type Context = { params: Promise<{ path?: string[] }> };
 
 export async function GET(request: Request, context: Context): Promise<Response> {
@@ -12,13 +15,42 @@ export async function GET(request: Request, context: Context): Promise<Response>
   const upstreamUrl = `${upstreamBase}/${subPath}`;
 
   try {
-    const upstream = await fetch(upstreamUrl, {
+    let upstream = await fetch(upstreamUrl, {
       cache: "no-store",
       headers: {
         Accept: "*/*",
       },
       signal: AbortSignal.timeout(10000),
     });
+
+    // Jika path belum ada di MediaMTX (404), coba daftarkan otomatis dari database
+    if (upstream.status === 404 && path.length >= 2 && path[1] === "index.m3u8") {
+      const streamKey = path[0];
+      const normalizedKey = streamKey.replace(/^cam-/, "").toLowerCase();
+
+      const row = await queryOne<{ stream_url: string | null }>(
+        `SELECT t.stream_url
+         FROM devices d
+         LEFT JOIN camera_telemetry t ON t.device_id = d.id
+         WHERE LOWER(REGEXP_REPLACE(d.serial_number, '[^a-zA-Z0-9]', '-', 'g')) = $1
+            OR LOWER(d.serial_number) = $1
+         LIMIT 1`,
+        [normalizedKey],
+      );
+
+      if (row?.stream_url?.startsWith("rtsp://")) {
+        const registered = await ensureMediamtxPath(streamKey, row.stream_url);
+        if (registered) {
+          // Tunggu sebentar agar MediaMTX menginisiasi path, lalu fetch ulang
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          upstream = await fetch(upstreamUrl, {
+            cache: "no-store",
+            headers: { Accept: "*/*" },
+            signal: AbortSignal.timeout(10000),
+          });
+        }
+      }
+    }
 
     const headers = new Headers();
     headers.set("Access-Control-Allow-Origin", "*");

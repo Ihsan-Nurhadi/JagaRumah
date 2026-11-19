@@ -77,27 +77,29 @@ export async function cameraStreamUrls(customerId: string, cameraId: string) {
   };
 }
 
-async function ensureMediamtxPath(name: string, source: string): Promise<void> {
+export async function ensureMediamtxPath(name: string, source: string): Promise<boolean> {
   const api = process.env.MEDIAMTX_API_URL ?? "http://host.docker.internal:9997";
   const body = JSON.stringify({
     source,
     sourceOnDemand: true,
-    sourceOnDemandStartTimeout: "10s",
-    sourceOnDemandCloseAfter: "10s",
-    rtspTransport: "tcp",
   });
-  const init = { headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(3000) };
+  const init = { headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(4000) };
 
   try {
-    let res = await fetch(`${api}/v3/config/paths/patch/${name}`, { ...init, method: "PATCH" });
-    if (res.status === 404) {
-      res = await fetch(`${api}/v3/config/paths/add/${name}`, { ...init, method: "POST" });
+    let res = await fetch(`${api}/v3/config/paths/add/${name}`, { ...init, method: "POST" });
+    if (!res.ok) {
+      // Jika path sudah ada atau butuh update, coba PATCH
+      res = await fetch(`${api}/v3/config/paths/patch/${name}`, { ...init, method: "PATCH" });
     }
     if (!res.ok) {
-      console.error(`[mediamtx] gagal mendaftarkan path ${name}: HTTP ${res.status}`);
+      const err = await res.text();
+      console.error(`[mediamtx] gagal mendaftarkan path ${name}: HTTP ${res.status} - ${err}`);
+      return false;
     }
+    return true;
   } catch (error) {
     console.error(`[mediamtx] API tidak terjangkau (${api}):`, error);
+    return false;
   }
 }
 
