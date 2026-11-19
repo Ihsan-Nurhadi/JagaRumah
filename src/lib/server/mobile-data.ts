@@ -35,15 +35,15 @@ export async function cameraList(customerId: string, params: z.infer<typeof page
   if (params.q) { values.push(`%${params.q.replace(/[\\%_]/g, "\\$&")} %`.replace(" %", "%")); where.push(`(d.name ILIKE $${values.length} OR d.serial_number ILIKE $${values.length})`); }
   const at = cursor(params.cursor); if (at) { values.push(at); where.push(`d.created_at < $${values.length}`); }
   values.push(params.limit + 1);
-  const rows = await query<any>(`SELECT d.id,d.name,d.serial_number,d.model,d.created_at AS cursor_value,COALESCE(t.connection_status,'unknown') status,COALESCE(t.recording_status,'unknown') recording_status,t.thumbnail_url,t.thumbnail_expires_at,t.stream_url,t.last_seen_at FROM devices d LEFT JOIN camera_telemetry t ON t.device_id=d.id WHERE ${where.join(" AND ")} ORDER BY d.created_at DESC LIMIT $${values.length}`, values);
+  const rows = await query<any>(`SELECT d.id,d.name,d.serial_number,d.model,d.created_at AS cursor_value,COALESCE(t.connection_status,'unknown') status,COALESCE(t.recording_status,'unknown') recording_status,t.thumbnail_url,t.thumbnail_expires_at,t.last_seen_at FROM devices d LEFT JOIN camera_telemetry t ON t.device_id=d.id WHERE ${where.join(" AND ")} ORDER BY d.created_at DESC LIMIT $${values.length}`, values);
   const page = pageMeta(rows, params.limit);
-  return { cameras: page.items.map((r) => ({ id:r.id,name:r.name,serial_number:r.serial_number,model:r.model,status:r.status,recording_status:r.recording_status,thumbnail_url:r.thumbnail_url,stream_url:r.stream_url,thumbnail_expires_at:date(r.thumbnail_expires_at),last_seen_at:date(r.last_seen_at),created_at:date(r.cursor_value) })), pagination: page.pagination };
+  return { cameras: page.items.map((r) => ({ id:r.id,name:r.name,serial_number:r.serial_number,model:r.model,status:r.status,recording_status:r.recording_status,thumbnail_url:r.thumbnail_url,thumbnail_expires_at:date(r.thumbnail_expires_at),last_seen_at:date(r.last_seen_at),created_at:date(r.cursor_value) })), pagination: page.pagination };
 }
 
 export async function cameraDetail(customerId: string, cameraId: string) {
-  const row = await queryOne<any>(`SELECT d.id,d.name,d.serial_number,d.model,COALESCE(t.connection_status,'unknown') status,COALESCE(t.recording_status,'unknown') recording_status,t.thumbnail_url,t.thumbnail_expires_at,t.stream_url,t.last_seen_at,(SELECT max(a.occurred_at) FROM camera_alerts a WHERE a.device_id=d.id) latest_alert_at,(SELECT max(r.started_at) FROM camera_recordings r WHERE r.device_id=d.id) latest_recording_at FROM devices d LEFT JOIN camera_telemetry t ON t.device_id=d.id WHERE d.id=$1 AND d.customer_id=$2 AND d.status IN ('claimed','suspended')`, [cameraId, customerId]);
+  const row = await queryOne<any>(`SELECT d.id,d.name,d.serial_number,d.model,COALESCE(t.connection_status,'unknown') status,COALESCE(t.recording_status,'unknown') recording_status,t.thumbnail_url,t.thumbnail_expires_at,t.last_seen_at,(SELECT max(a.occurred_at) FROM camera_alerts a WHERE a.device_id=d.id) latest_alert_at,(SELECT max(r.started_at) FROM camera_recordings r WHERE r.device_id=d.id) latest_recording_at FROM devices d LEFT JOIN camera_telemetry t ON t.device_id=d.id WHERE d.id=$1 AND d.customer_id=$2 AND d.status IN ('claimed','suspended')`, [cameraId, customerId]);
   if (!row) throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Kamera tidak ditemukan." });
-  return { camera: { ...row, thumbnail_expires_at:date(row.thumbnail_expires_at), stream_url: row.stream_url, last_seen_at:date(row.last_seen_at), latest_alert_at:date(row.latest_alert_at), latest_recording_at:date(row.latest_recording_at) } };
+  return { camera: { ...row, thumbnail_expires_at:date(row.thumbnail_expires_at), last_seen_at:date(row.last_seen_at), latest_alert_at:date(row.latest_alert_at), latest_recording_at:date(row.latest_recording_at) } };
 }
 
 export async function cameraStreamUrls(customerId: string, cameraId: string) {
