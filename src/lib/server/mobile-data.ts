@@ -57,15 +57,48 @@ export async function cameraStreamUrls(customerId: string, cameraId: string) {
   if (!row) throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Kamera tidak ditemukan." });
 
   const streamKey = `cam-${row.serial_number.toLowerCase().replace(/[^a-z0-9]/g, "-")}`;
+
+  /*
+    Daftarkan path ke MediaMTX dengan sumber on-demand: kamera baru ditarik saat ada penonton
+    dan diputus otomatis beberapa detik setelah penonton terakhir keluar.
+  */
+  if (row.stream_url?.startsWith("rtsp://")) {
+    await ensureMediamtxPath(streamKey, row.stream_url);
+  }
+
+  const publicHost = process.env.MEDIAMTX_PUBLIC_HOST ?? "dev.nayakacloud.com";
   return {
     camera_id: row.id,
     camera_name: row.name,
     stream_key: streamKey,
-    rtsp_url: `rtsp://stream.nayakacloud.com:8554/${streamKey}`,
-    webrtc_url: `http://dev.nayakacloud.com:8889/${streamKey}/whep`,
-    hls_url: `http://dev.nayakacloud.com:8888/${streamKey}/index.m3u8`,
-    upstream_url: row.stream_url,
+    rtsp_url: `rtsp://${publicHost}:8554/${streamKey}`,
+    webrtc_url: `http://${publicHost}:8889/${streamKey}/whep`,
+    hls_url: `http://${publicHost}:8888/${streamKey}/index.m3u8`,
   };
+}
+
+async function ensureMediamtxPath(name: string, source: string): Promise<void> {
+  const api = process.env.MEDIAMTX_API_URL ?? "http://host.docker.internal:9997";
+  const body = JSON.stringify({
+    source,
+    sourceOnDemand: true,
+    sourceOnDemandStartTimeout: "10s",
+    sourceOnDemandCloseAfter: "10s",
+    rtspTransport: "tcp",
+  });
+  const init = { headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(3000) };
+
+  try {
+    let res = await fetch(`${api}/v3/config/paths/patch/${name}`, { ...init, method: "PATCH" });
+    if (res.status === 404) {
+      res = await fetch(`${api}/v3/config/paths/add/${name}`, { ...init, method: "POST" });
+    }
+    if (!res.ok) {
+      console.error(`[mediamtx] gagal mendaftarkan path ${name}: HTTP ${res.status}`);
+    }
+  } catch (error) {
+    console.error(`[mediamtx] API tidak terjangkau (${api}):`, error);
+  }
 }
 
 export async function alertList(customerId: string, params: z.infer<typeof pageSchema>) {
