@@ -499,7 +499,7 @@ export async function claimDeviceByCode(
     if (claim.used_at !== null) {
       await client.query(
         `INSERT INTO device_claim_attempts (device_id, customer_id, submitted_kind, submitted_value_masked, ip_address, user_agent, success, failure_reason)
-         VALUES ($1, $2, 'qr', $3, $4, false, 'Kode claim sudah pernah dipakai.')`,
+         VALUES ($1, $2, 'qr', $3, $4, $5, false, 'Kode claim sudah pernah dipakai.')`,
         [claim.device_id, customerId, maskedValue, clientIp ?? null, userAgent ?? null],
       );
       throw new AppError({
@@ -511,7 +511,7 @@ export async function claimDeviceByCode(
     if (claim.expires_at && claim.expires_at.getTime() <= Date.now()) {
       await client.query(
         `INSERT INTO device_claim_attempts (device_id, customer_id, submitted_kind, submitted_value_masked, ip_address, user_agent, success, failure_reason)
-         VALUES ($1, $2, 'qr', $3, $4, false, 'Kode claim sudah kedaluwarsa.')`,
+         VALUES ($1, $2, 'qr', $3, $4, $5, false, 'Kode claim sudah kedaluwarsa.')`,
         [claim.device_id, customerId, maskedValue, clientIp ?? null, userAgent ?? null],
       );
       throw new AppError({
@@ -571,7 +571,7 @@ export async function claimDeviceByCode(
     // 5. Catat riwayat klaim
     await client.query(
       `INSERT INTO device_claim_attempts (device_id, customer_id, submitted_kind, submitted_value_masked, ip_address, user_agent, success)
-       VALUES ($1, $2, 'qr', $3, $4, true)`,
+       VALUES ($1, $2, 'qr', $3, $4, $5, true)`,
       [claim.device_id, customerId, maskedValue, clientIp ?? null, userAgent ?? null],
     );
 
@@ -580,6 +580,10 @@ export async function claimDeviceByCode(
       deviceName: claim.device_name,
       serialNumber: claim.serial_number,
       model: claim.model,
+      device_id: claim.device_id,
+      device_name: claim.device_name,
+      name: claim.device_name,
+      serial_number: claim.serial_number,
     };
   });
 }
