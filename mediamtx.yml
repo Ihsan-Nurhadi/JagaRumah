@@ -4,12 +4,12 @@
 logLevel: info
 logDestinations: [stdout]
 
-# ── 1. RTSP Server ──────────────────────────────────────────────────────────
+# 1. RTSP Server
 rtsp: yes
 rtspAddress: :8554
 rtspTransports: [tcp]
 
-# ── 2. WebRTC Server (Latensi Super Rendah ~0.2 - 0.5s) ────────────────────
+# 2. WebRTC Server (Latensi Super Rendah ~0.2 - 0.5s)
 webrtc: yes
 webrtcAddress: :8889
 webrtcEncryption: no
@@ -18,27 +18,19 @@ webrtcLocalUDPAddress: :8189
 # Isi dengan IP Publik VPS Anda (atau domain misal: cctv.domainanda.com)
 webrtcAdditionalHosts: []
 
-# ── 3. HLS Server (Low-Latency HLS sebagai fallback) ───────────────────────
+# 3. HLS Server (Low-Latency HLS sebagai fallback)
 hls: yes
 hlsAddress: :8888
 hlsVariant: lowLatency
 hlsSegmentCount: 7
 hlsSegmentDuration: 1s
 
-# ── 4. API Control (Untuk registrasi stream dinamis) ────────────────────────
+# 4. API Control (Untuk registrasi stream dinamis)
 api: yes
 apiAddress: :9997
 
-# ── 5. Paths (Stream Kamera) ────────────────────────────────────────────────
+# 5. Paths (Stream Kamera)
 paths:
-  # Konfigurasi kamera Tapo C500 (Contoh: cam-1)
-  # sourceOnDemand: yes memastikan stream RTSP ke Tapo hanya ditarik saat ada user yang menonton
-  # sehingga menghemat kuota & bandwidth OpenVPN.
-  tapo-sample:
-    source: rtsp://admin:password@10.8.0.50:554/stream1
-    sourceOnDemand: yes
-    sourceOnDemandCloseAfter: 10s
-
-  # Path fleksibel untuk semua stream yang didaftarkan lewat API atau URL
+  # Kamera ditarik dari sumber RTSP (via OpenVPN) hanya saat ada penonton.
+  # Path dibuat dinamis lewat API (port 9997) atau didaftarkan manual di sini.
   all_others:
-    sourceOnDemand: yes
