@@ -865,7 +865,7 @@ function ReasonDialog({
     reset,
     formState: { isSubmitting },
   } = useForm<{ reason: string }>({
-    resolver: zodResolver(assignForm),
+    resolver: requiresReason ? zodResolver(assignForm) : undefined,
     defaultValues: { reason: "" },
   });
 
