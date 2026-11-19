@@ -73,7 +73,7 @@ export async function cameraStreamUrls(customerId: string, cameraId: string) {
     stream_key: streamKey,
     rtsp_url: `rtsp://${publicHost}:8554/${streamKey}`,
     webrtc_url: `http://${publicHost}:8889/${streamKey}/whep`,
-    hls_url: `http://${publicHost}:8888/${streamKey}/index.m3u8`,
+    hls_url: `http://${publicHost}:701/api/v1/hls/${streamKey}/index.m3u8`,
   };
 }
 
