@@ -78,29 +78,36 @@ export async function cameraStreamUrls(customerId: string, cameraId: string) {
 }
 
 export async function ensureMediamtxPath(name: string, source: string): Promise<boolean> {
-  const api = process.env.MEDIAMTX_API_URL ?? "http://host.docker.internal:9997";
+  const candidateApis = [
+    process.env.MEDIAMTX_API_URL,
+    "http://host.docker.internal:9997",
+    "http://172.17.0.1:9997",
+    "http://172.18.0.1:9997",
+  ].filter(Boolean) as string[];
+
   const body = JSON.stringify({
     source,
     sourceOnDemand: true,
   });
-  const init = { headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(4000) };
 
-  try {
-    let res = await fetch(`${api}/v3/config/paths/add/${name}`, { ...init, method: "POST" });
-    if (!res.ok) {
-      // Jika path sudah ada atau butuh update, coba PATCH
-      res = await fetch(`${api}/v3/config/paths/patch/${name}`, { ...init, method: "PATCH" });
+  for (const api of candidateApis) {
+    const init = { headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(3000) };
+    try {
+      let res = await fetch(`${api}/v3/config/paths/add/${name}`, { ...init, method: "POST" });
+      if (!res.ok) {
+        // Jika path sudah ada atau butuh update, coba PATCH
+        res = await fetch(`${api}/v3/config/paths/patch/${name}`, { ...init, method: "PATCH" });
+      }
+      if (res.ok) {
+        return true;
+      }
+    } catch {
+      // Coba kandidat host API berikutnya
     }
-    if (!res.ok) {
-      const err = await res.text();
-      console.error(`[mediamtx] gagal mendaftarkan path ${name}: HTTP ${res.status} - ${err}`);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error(`[mediamtx] API tidak terjangkau (${api}):`, error);
-    return false;
   }
+
+  console.error(`[mediamtx] gagal mendaftarkan path ${name} ke semua kandidat API`);
+  return false;
 }
 
 export async function alertList(customerId: string, params: z.infer<typeof pageSchema>) {

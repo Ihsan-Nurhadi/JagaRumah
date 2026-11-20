@@ -11,17 +11,39 @@ export async function GET(request: Request, context: Context): Promise<Response>
 
   // Rekonstruksi subpath HLS (misal: cam-xxx/index.m3u8 atau cam-xxx/segment.m4s)
   const subPath = path.map((segment) => encodeURIComponent(segment)).join("/");
-  const upstreamBase = process.env.MEDIAMTX_INTERNAL_HLS_URL ?? "http://host.docker.internal:8888";
-  const upstreamUrl = `${upstreamBase}/${subPath}`;
+  const candidateBases = [
+    process.env.MEDIAMTX_INTERNAL_HLS_URL,
+    "http://host.docker.internal:8888",
+    "http://172.17.0.1:8888",
+    "http://172.18.0.1:8888",
+  ].filter(Boolean) as string[];
+
+  let upstream: Response | null = null;
+  let activeBase = candidateBases[0];
+
+  for (const base of candidateBases) {
+    try {
+      const res = await fetch(`${base}/${subPath}`, {
+        cache: "no-store",
+        headers: { Accept: "*/*" },
+        signal: AbortSignal.timeout(8000),
+      });
+      upstream = res;
+      activeBase = base;
+      break;
+    } catch {
+      // Coba kandidat bridge IP berikutnya
+    }
+  }
+
+  if (!upstream) {
+    return new Response("MediaMTX internal server unavailable", {
+      status: 502,
+      headers: { "Access-Control-Allow-Origin": "*" },
+    });
+  }
 
   try {
-    let upstream = await fetch(upstreamUrl, {
-      cache: "no-store",
-      headers: {
-        Accept: "*/*",
-      },
-      signal: AbortSignal.timeout(10000),
-    });
 
     // Jika path belum ada di MediaMTX (404), coba daftarkan otomatis dari database
     if (upstream.status === 404 && path.length >= 2 && path[1] === "index.m3u8") {
@@ -43,7 +65,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
         if (registered) {
           // Tunggu sebentar agar MediaMTX menginisiasi path, lalu fetch ulang
           await new Promise((resolve) => setTimeout(resolve, 1000));
-          upstream = await fetch(upstreamUrl, {
+          upstream = await fetch(`${activeBase}/${subPath}`, {
             cache: "no-store",
             headers: { Accept: "*/*" },
             signal: AbortSignal.timeout(10000),
@@ -68,7 +90,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
       headers,
     });
   } catch (error) {
-    console.error(`[hls-proxy] gagal fetch dari MediaMTX (${upstreamUrl}):`, error);
+    console.error(`[hls-proxy] gagal fetch dari MediaMTX (${activeBase}/${subPath}):`, error);
     return new Response("Upstream stream unavailable", {
       status: 502,
       headers: { "Access-Control-Allow-Origin": "*" },
