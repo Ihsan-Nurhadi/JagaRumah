@@ -101,7 +101,9 @@ export async function ensureMediamtxPath(name: string, source: string): Promise<
       if (res.ok) {
         return true;
       }
-    } catch {
+      const errText = await res.text().catch(() => "");
+      console.warn(`[mediamtx] ${api} mengembalikan HTTP ${res.status} untuk path ${name}: ${errText}`);
+    } catch (err) {
       // Coba kandidat host API berikutnya
     }
   }
