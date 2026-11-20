@@ -9,8 +9,10 @@ export async function GET(request: Request, context: Context): Promise<Response>
     return new Response("Not found", { status: 404 });
   }
 
-  // Rekonstruksi subpath HLS (misal: cam-xxx/index.m3u8 atau cam-xxx/segment.m4s)
+  // Rekonstruksi subpath HLS beserta query string (misal: ?session=... atau ?_HLS_msn=...)
   const subPath = path.map((segment) => encodeURIComponent(segment)).join("/");
+  const { search } = new URL(request.url);
+  const upstreamPath = `${subPath}${search}`;
   const candidateBases = [
     process.env.MEDIAMTX_INTERNAL_HLS_URL,
     "http://host.docker.internal:8888",
@@ -23,7 +25,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
 
   for (const base of candidateBases) {
     try {
-      const res = await fetch(`${base}/${subPath}`, {
+      const res = await fetch(`${base}/${upstreamPath}`, {
         cache: "no-store",
         headers: { Accept: "*/*" },
         signal: AbortSignal.timeout(8000),
@@ -65,7 +67,7 @@ export async function GET(request: Request, context: Context): Promise<Response>
         if (registered) {
           // Tunggu sebentar agar MediaMTX menginisiasi path, lalu fetch ulang
           await new Promise((resolve) => setTimeout(resolve, 1000));
-          upstream = await fetch(`${activeBase}/${subPath}`, {
+          upstream = await fetch(`${activeBase}/${upstreamPath}`, {
             cache: "no-store",
             headers: { Accept: "*/*" },
             signal: AbortSignal.timeout(10000),

@@ -18,12 +18,12 @@ webrtcLocalUDPAddress: :8189
 # Isi dengan IP Publik VPS Anda (atau domain misal: cctv.domainanda.com)
 webrtcAdditionalHosts: []
 
-# 3. HLS Server (Low-Latency HLS sebagai fallback)
+# 3. HLS Server (fMP4 HLS stabil untuk kamera dengan GOP bervariasi)
 hls: yes
 hlsAddress: :8888
-hlsVariant: lowLatency
+hlsVariant: fmp4
 hlsSegmentCount: 7
-hlsSegmentDuration: 1s
+hlsSegmentDuration: 2s
 
 # 4. API Control (Untuk registrasi stream dinamis)
 api: yes
