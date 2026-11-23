@@ -1,47 +1,31 @@
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import { AppError } from "./errors";
 
-const execFileAsync = promisify(execFile);
 const TALK_TMP_DIR = process.env.TALK_TMP_DIR ?? "/talk-tmp";
 
-function getGo2RtcCandidates(): string[] {
+function getWorkerCandidates(): string[] {
   return [
-    process.env.GO2RTC_API_URL,
-    "http://host.docker.internal:1984",
-    "http://172.17.0.1:1984",
-    "http://172.18.0.1:1984",
+    process.env.TAPO_TALK_WORKER_URL,
+    "http://host.docker.internal:8099",
+    "http://172.17.0.1:8099",
+    "http://172.18.0.1:8099",
   ].filter(Boolean) as string[];
 }
 
-async function fetchGo2Rtc(pathname: string, init: RequestInit): Promise<Response> {
-  const candidates = getGo2RtcCandidates();
-  let lastErr: unknown = null;
-
-  for (const base of candidates) {
-    try {
-      const res = await fetch(`${base}${pathname}`, {
-        ...init,
-        signal: AbortSignal.timeout(15000),
-      });
-      return res;
-    } catch (err) {
-      lastErr = err;
-    }
+function resolveControlPort(rtspPort: number | null): number {
+  if (process.env.TAPO_CONTROL_PORT) {
+    const parsed = Number.parseInt(process.env.TAPO_CONTROL_PORT, 10);
+    if (parsed > 0) return parsed;
   }
-
-  console.error("[go2rtc] tidak dapat menjangkau server go2rtc:", lastErr);
-  throw new AppError({
-    code: "INTERNAL_ERROR",
-    message: "Layanan speaker (go2rtc) belum aktif atau tidak terjangkau.",
-  });
+  // Pemetaan port forwarding OpenWrt: RTSP 556 -> 8443, default -> 443
+  if (rtspPort === 556) return 8443;
+  return 443;
 }
 
 /**
- * Mengonversi audio dari HP ke WAV 8kHz mono lalu memutarnya ke speaker kamera via go2rtc backchannel.
+ * Mengirim audio dari HP ke speaker Tapo C500 lewat worker Python `pytapo`.
  */
 export async function sendAudioToCameraSpeaker(params: {
   streamKey: string;
@@ -53,55 +37,69 @@ export async function sendAudioToCameraSpeaker(params: {
     throw new AppError({ code: "VALIDATION_ERROR", message: "File audio tidak boleh kosong." });
   }
 
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(params.rtspUrl);
+  } catch {
+    throw new AppError({ code: "VALIDATION_ERROR", message: "Format RTSP URL kamera tidak valid." });
+  }
+
+  const host = parsedUrl.hostname;
+  const rtspPort = parsedUrl.port ? Number.parseInt(parsedUrl.port, 10) : null;
+  const rtspUser = decodeURIComponent(parsedUrl.username || "");
+  const rtspPassword = decodeURIComponent(parsedUrl.password || "");
+  const cloudPassword = process.env.TAPO_CLOUD_PASSWORD || rtspPassword;
+  const controlPort = resolveControlPort(rtspPort);
+
   await mkdir(TALK_TMP_DIR, { recursive: true });
   const id = randomUUID();
   const safeExt = (params.inputExtension ?? "m4a").replace(/[^a-z0-9]/gi, "") || "m4a";
   const rawInputPath = path.join(TALK_TMP_DIR, `in-${id}.${safeExt}`);
-  const wavFileName = `talk-${id}.wav`;
-  const wavOutputPath = path.join(TALK_TMP_DIR, wavFileName);
 
   try {
     await writeFile(rawInputPath, params.audioBuffer);
 
-    // Normalisasi audio ke 8kHz mono PCM WAV agar kompatibel dengan G.711 backchannel Tapo C500
-    await execFileAsync(
-      "ffmpeg",
-      ["-y", "-i", rawInputPath, "-ar", "8000", "-ac", "1", "-c:a", "pcm_s16le", wavOutputPath],
-      { timeout: 20000 },
-    );
+    const candidates = getWorkerCandidates();
+    let res: Response | null = null;
+    let lastErr: unknown = null;
 
-    // 1. Pastikan stream kamera terdaftar di go2rtc
-    const registerRes = await fetchGo2Rtc(
-      `/api/streams?name=${encodeURIComponent(params.streamKey)}&src=${encodeURIComponent(params.rtspUrl)}`,
-      { method: "PUT" },
-    );
-    if (!registerRes.ok) {
-      const errText = await registerRes.text().catch(() => "");
+    for (const base of candidates) {
+      try {
+        res = await fetch(`${base}/talk`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            host,
+            control_port: controlPort,
+            rtsp_user: rtspUser,
+            rtsp_password: rtspPassword,
+            cloud_password: cloudPassword,
+            audio_path: rawInputPath,
+          }),
+          signal: AbortSignal.timeout(30000),
+        });
+        break;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+
+    if (!res) {
+      console.error("[tapo-talk] gagal menjangkau worker pytapo:", lastErr);
       throw new AppError({
         code: "INTERNAL_ERROR",
-        message: `Gagal mendaftarkan stream speaker ke go2rtc (HTTP ${registerRes.status}): ${errText}`,
+        message: "Layanan speaker (tapo-talk worker) belum aktif atau tidak terjangkau.",
       });
     }
 
-    // 2. Kirim audio ke speaker kamera lewat RTSP backchannel
-    const ffmpegSrc = `ffmpeg:${path.posix.join("/talk-tmp", wavFileName)}#audio=pcma`;
-    const talkRes = await fetchGo2Rtc(
-      `/api/streams?dst=${encodeURIComponent(params.streamKey)}&src=${encodeURIComponent(ffmpegSrc)}`,
-      { method: "POST" },
-    );
-
-    if (!talkRes.ok) {
-      const errText = await talkRes.text().catch(() => "");
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
       throw new AppError({
         code: "INTERNAL_ERROR",
-        message: `Kamera menolak atau gagal memutar audio speaker (HTTP ${talkRes.status}): ${errText}`,
+        message: `Gagal memutar audio di speaker kamera (HTTP ${res.status}): ${errBody}`,
       });
     }
   } finally {
     await unlink(rawInputPath).catch(() => {});
-    // Tunggu sebentar agar go2rtc selesai membaca wavOutputPath sebelum dihapus
-    setTimeout(() => {
-      void unlink(wavOutputPath).catch(() => {});
-    }, 15000);
   }
 }

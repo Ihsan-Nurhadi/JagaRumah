@@ -37,3 +37,13 @@ services:
     volumes:
       - ./go2rtc.yaml:/config/go2rtc.yaml
       - ./talk-tmp:/talk-tmp
+
+  tapo-talk:
+    build:
+      context: ./tapo-talk-worker
+      dockerfile: Dockerfile
+    container_name: nayaka-tapo-talk
+    restart: unless-stopped
+    network_mode: "host"
+    volumes:
+      - ./talk-tmp:/talk-tmp
