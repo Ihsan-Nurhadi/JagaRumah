@@ -88,6 +88,7 @@ export async function ensureMediamtxPath(name: string, source: string): Promise<
   const body = JSON.stringify({
     source,
     sourceOnDemand: false,
+    rtspTransport: "tcp",
     record: true,
   });
 

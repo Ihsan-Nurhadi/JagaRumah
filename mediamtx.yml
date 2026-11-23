@@ -50,6 +50,7 @@ authInternalUsers:
 paths:
   # Kamera selalu streaming 24/7 dan otomatis merekam segmen 5 menit dengan retensi maksimal 24 jam.
   all_others:
+    rtspTransport: tcp
     record: yes
     recordPath: /recordings/%path/%Y-%m-%d_%H-%M-%S
     recordFormat: fmp4
