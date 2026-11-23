@@ -3,6 +3,7 @@ import { z } from "zod";
 /* eslint-disable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unused-vars */
 
 import { query, queryOne, withTransaction, type Queryable } from "./db";
+import { ensureCameraRelay } from "./audio-relay";
 import { AppError } from "./errors";
 import { requireMobile, profileSchema, settingsSchema, pushSchema, biometricSchema } from "./mobile";
 import { listed, noContent, ok, requireUuid } from "./request";
@@ -85,13 +86,13 @@ export async function ensureMediamtxPath(name: string, source: string): Promise<
     "http://172.18.0.1:9997",
   ].filter(Boolean) as string[];
 
+  // Daftarkan path sebagai publisher karena stream dikirim oleh relay FFmpeg (H264 copy + AAC audio)
   const body = JSON.stringify({
-    source,
-    sourceOnDemand: false,
-    rtspTransport: "tcp",
+    source: "publisher",
     record: true,
   });
 
+  let registered = false;
   for (const api of candidateApis) {
     const init = { headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(3000) };
     try {
@@ -101,17 +102,23 @@ export async function ensureMediamtxPath(name: string, source: string): Promise<
         res = await fetch(`${api}/v3/config/paths/patch/${name}`, { ...init, method: "PATCH" });
       }
       if (res.ok) {
-        return true;
+        registered = true;
+        break;
       }
       const errText = await res.text().catch(() => "");
       console.warn(`[mediamtx] ${api} mengembalikan HTTP ${res.status} untuk path ${name}: ${errText}`);
-    } catch (err) {
+    } catch {
       // Coba kandidat host API berikutnya
     }
   }
 
-  console.error(`[mediamtx] gagal mendaftarkan path ${name} ke semua kandidat API`);
-  return false;
+  if (!registered) {
+    console.error(`[mediamtx] gagal mendaftarkan path ${name} ke semua kandidat API`);
+    return false;
+  }
+
+  await ensureCameraRelay(name, source);
+  return true;
 }
 
 export async function alertList(customerId: string, params: z.infer<typeof pageSchema>) {
