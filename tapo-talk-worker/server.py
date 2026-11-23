@@ -74,18 +74,34 @@ async def send_talk_audio_async(payload: dict) -> dict:
     )
 
     async with session:
-        async for _resp in session.transceive(talk_req):
-            break
+        async def keep_talk_session():
+            async for _resp in session.transceive(talk_req):
+                pass
 
-        chunk_size = 320
-        for offset in range(0, len(alaw_bytes), chunk_size):
-            chunk = alaw_bytes[offset : offset + chunk_size]
-            if hasattr(session, "send"):
-                await session.send(chunk)
-            else:
-                async for _r in session.transceive(chunk):
+        talk_task = asyncio.create_task(keep_talk_session())
+        try:
+            # Tunggu hingga pytapo menginisialisasi session.talk_session
+            for _ in range(100):
+                if getattr(session, "talk_session", None) is not None:
                     break
-            await asyncio.sleep(0.038)
+                if talk_task.done():
+                    talk_task.result()
+                await asyncio.sleep(0.1)
+
+            if getattr(session, "talk_session", None) is None:
+                raise RuntimeError("Kamera tidak menginisialisasi talk_session dalam 10 detik.")
+
+            chunk_size = 1600  # 200ms audio PCMA 8kHz per chunk
+            for offset in range(0, len(alaw_bytes), chunk_size):
+                chunk = alaw_bytes[offset : offset + chunk_size]
+                await session.send_audio(chunk)
+                await asyncio.sleep(len(chunk) / 8000.0)
+        finally:
+            talk_task.cancel()
+            try:
+                await talk_task
+            except asyncio.CancelledError:
+                pass
 
     return {"sent_bytes": len(alaw_bytes), "host": host, "control_port": control_port}
 
