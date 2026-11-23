@@ -87,7 +87,8 @@ export async function ensureMediamtxPath(name: string, source: string): Promise<
 
   const body = JSON.stringify({
     source,
-    sourceOnDemand: true,
+    sourceOnDemand: false,
+    record: true,
   });
 
   for (const api of candidateApis) {
@@ -126,7 +127,43 @@ export async function alertList(customerId: string, params: z.infer<typeof pageS
 }
 
 export async function recordingList(customerId: string, params: z.infer<typeof pageSchema>) {
-  const values: unknown[]=[customerId];const where=["d.customer_id=$1","r.status='available'"];if(params.camera_id){values.push(params.camera_id);where.push(`r.device_id=$${values.length}::uuid`);}if(params.from){values.push(params.from);where.push(`r.started_at >= $${values.length}`);}if(params.to){values.push(params.to);where.push(`r.started_at <= $${values.length}`);}const at=cursor(params.cursor);if(at){values.push(at);where.push(`r.started_at < $${values.length}`);}values.push(params.limit+1);const rows=await query<any>(`SELECT r.*,d.name camera_name,r.started_at cursor_value FROM camera_recordings r JOIN devices d ON d.id=r.device_id WHERE ${where.join(" AND ")} ORDER BY r.started_at DESC LIMIT $${values.length}`,values);const page=pageMeta(rows,params.limit);return {recordings:page.items.map((r)=>({id:r.id,camera_id:r.device_id,camera_name:r.camera_name,status:r.status,started_at:date(r.started_at),ended_at:date(r.ended_at),duration_seconds:r.duration_seconds,thumbnail_url:r.thumbnail_url,thumbnail_expires_at:date(r.thumbnail_expires_at),playback_url:r.playback_url,playback_expires_at:date(r.playback_expires_at),expires_at:date(r.expires_at),created_at:date(r.created_at)})),pagination:page.pagination};
+  const publicHost = process.env.MEDIAMTX_PUBLIC_HOST ?? "dev.nayakacloud.com";
+  const values: unknown[] = [customerId];
+  const where = [
+    "d.customer_id=$1",
+    "r.status='available'",
+    "r.started_at >= now() - interval '24 hours'",
+  ];
+  if (params.camera_id) { values.push(params.camera_id); where.push(`r.device_id=$${values.length}::uuid`); }
+  if (params.from) { values.push(params.from); where.push(`r.started_at >= $${values.length}`); }
+  if (params.to) { values.push(params.to); where.push(`r.started_at <= $${values.length}`); }
+  const at = cursor(params.cursor);
+  if (at) { values.push(at); where.push(`r.started_at < $${values.length}`); }
+  values.push(params.limit + 1);
+  const rows = await query<any>(
+    `SELECT r.*,d.name camera_name,r.started_at cursor_value FROM camera_recordings r JOIN devices d ON d.id=r.device_id WHERE ${where.join(" AND ")} ORDER BY r.started_at DESC LIMIT $${values.length}`,
+    values,
+  );
+  const page = pageMeta(rows, params.limit);
+  return {
+    recordings: page.items.map((r) => ({
+      id: r.id,
+      camera_id: r.device_id,
+      camera_name: r.camera_name,
+      status: r.status,
+      started_at: date(r.started_at),
+      ended_at: date(r.ended_at),
+      duration_seconds: r.duration_seconds,
+      file_size_bytes: r.file_size_bytes ?? null,
+      thumbnail_url: r.thumbnail_url,
+      thumbnail_expires_at: date(r.thumbnail_expires_at),
+      playback_url: r.file_path ? `http://${publicHost}:701/api/v1/recordings/${r.id}/stream` : r.playback_url,
+      playback_expires_at: date(r.playback_expires_at ?? r.expires_at),
+      expires_at: date(r.expires_at),
+      created_at: date(r.created_at),
+    })),
+    pagination: page.pagination,
+  };
 }
 
 export async function updateProfile(request: Request, customerId: string) { const input=await parseJson(request,profileSchema); const row=await queryOne<any>("UPDATE customers SET full_name=COALESCE($2,full_name),avatar_url=CASE WHEN $3::boolean THEN $4 ELSE avatar_url END WHERE id=$1 RETURNING id,full_name,avatar_url,status,created_at",[customerId,input.full_name,input.avatar_url!==undefined,input.avatar_url]);if(!row)throw new AppError({code:"RESOURCE_NOT_FOUND",message:"Profile tidak ditemukan."});return {profile:{...row,created_at:date(row.created_at)}}; }
@@ -147,9 +184,25 @@ export async function markAlertRead(customerId: string, alertId?: string) {
   return { updated_count: result?.updated ?? 0 };
 }
 export async function recordingDetail(customerId: string, recordingId: string) {
-  const row = await queryOne<any>("SELECT r.*,d.name camera_name FROM camera_recordings r JOIN devices d ON d.id=r.device_id WHERE r.id=$1 AND d.customer_id=$2", [recordingId, customerId]);
-  if (!row) throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Rekaman tidak ditemukan." });
-  return { recording: { ...row, started_at:date(row.started_at), ended_at:date(row.ended_at), thumbnail_expires_at:date(row.thumbnail_expires_at), playback_expires_at:date(row.playback_expires_at), expires_at:date(row.expires_at), created_at:date(row.created_at) } };
+  const publicHost = process.env.MEDIAMTX_PUBLIC_HOST ?? "dev.nayakacloud.com";
+  const row = await queryOne<any>(
+    "SELECT r.*,d.name camera_name FROM camera_recordings r JOIN devices d ON d.id=r.device_id WHERE r.id=$1 AND d.customer_id=$2 AND r.started_at >= now() - interval '24 hours'",
+    [recordingId, customerId],
+  );
+  if (!row) throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Rekaman tidak ditemukan atau sudah kedaluwarsa (> 24 jam)." });
+  return {
+    recording: {
+      ...row,
+      file_size_bytes: row.file_size_bytes ?? null,
+      playback_url: row.file_path ? `http://${publicHost}:701/api/v1/recordings/${row.id}/stream` : row.playback_url,
+      started_at: date(row.started_at),
+      ended_at: date(row.ended_at),
+      thumbnail_expires_at: date(row.thumbnail_expires_at),
+      playback_expires_at: date(row.playback_expires_at ?? row.expires_at),
+      expires_at: date(row.expires_at),
+      created_at: date(row.created_at),
+    },
+  };
 }
 export async function registerPush(customerId: string, request: Request) {
   const input = await parseJson(request, pushSchema);
