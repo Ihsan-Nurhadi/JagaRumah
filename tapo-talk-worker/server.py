@@ -1,10 +1,10 @@
+import asyncio
 import json
 import os
 import subprocess
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pytapo import Tapo
-from pytapo.media_stream.session import StreamType
+from pytapo.media_stream._utils import StreamType
 
 PORT = int(os.environ.get("PORT", "8099"))
 
@@ -33,7 +33,7 @@ def transcode_to_alaw(audio_path: str) -> bytes:
     return proc.stdout
 
 
-def send_talk_audio(payload: dict) -> dict:
+async def send_talk_audio_async(payload: dict) -> dict:
     host = payload["host"]
     control_port = int(payload.get("control_port") or 443)
     rtsp_password = payload.get("rtsp_password") or ""
@@ -57,35 +57,35 @@ def send_talk_audio(payload: dict) -> dict:
         or ""
     )
 
-    stream_type = getattr(StreamType, "Audio", None) or getattr(StreamType, "Stream")
-    session = tapo.getMediaSession(stream_type)
+    session = tapo.getMediaSession(StreamType.Stream)
 
-    talk_req = {
-        "type": "request",
-        "params": {
-            "talk": {
-                "mode": "aec",
-                **({"deviceId": device_id} if device_id else {}),
+    talk_req = json.dumps(
+        {
+            "type": "request",
+            "params": {
+                "talk": {
+                    "mode": "aec",
+                    **({"deviceId": device_id} if device_id else {}),
+                },
+                "method": "get",
             },
-            "method": "get",
-        },
-    }
+        }
+    )
 
-    # Kirim handshake talk, lalu alirkan frame PCMA 8kHz (320 bytes = 40ms per paket)
-    session.transceive(json.dumps(talk_req))
-    chunk_size = 320
-    for offset in range(0, len(alaw_bytes), chunk_size):
-        chunk = alaw_bytes[offset : offset + chunk_size]
-        if hasattr(session, "send_audio"):
-            session.send_audio(chunk)
-        elif hasattr(session, "transceive"):
-            session.transceive(chunk)
-        time.sleep(0.038)
+    async with session:
+        # Mulai sesi talk dengan kamera
+        async for _resp in session.transceive(talk_req):
+            break
 
-    try:
-        session.close()
-    except Exception:
-        pass
+        chunk_size = 320
+        for offset in range(0, len(alaw_bytes), chunk_size):
+            chunk = alaw_bytes[offset : offset + chunk_size]
+            if hasattr(session, "send"):
+                await session.send(chunk)
+            else:
+                async for _r in session.transceive(chunk):
+                    break
+            await asyncio.sleep(0.038)
 
     return {"sent_bytes": len(alaw_bytes), "host": host, "control_port": control_port}
 
@@ -114,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length)
             payload = json.loads(raw.decode("utf-8"))
-            result = send_talk_audio(payload)
+            result = asyncio.run(send_talk_audio_async(payload))
             self._send_json(200, {"ok": True, **result})
         except Exception as exc:
             print(f"[tapo-talk] error: {exc}", flush=True)
