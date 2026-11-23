@@ -63,12 +63,20 @@ async function postSoap(url: string, soapXml: string, timeoutMs = 3000): Promise
   return { ok: res.ok, status: res.status, text };
 }
 
-async function resolveOnvifTarget(host: string, username: string, password: string): Promise<OnvifTarget> {
-  const cached = profileCache.get(host);
+async function resolveOnvifTarget(host: string, rtspPort: number | null, username: string, password: string): Promise<OnvifTarget> {
+  const cacheKey = `${host}:${rtspPort ?? ""}`;
+  const cached = profileCache.get(cacheKey);
   if (cached) return cached;
 
   const envPort = process.env.ONVIF_PORT ? Number.parseInt(process.env.ONVIF_PORT, 10) : null;
-  const candidatePorts = [...new Set([envPort, 2020, 80, 8000].filter((p): p is number => Boolean(p && p > 0)))];
+  // Dukungan port-forwarding router (misal RTSP 554->ONVIF 2020, 555->2021, 556->2022)
+  const mappedOnvifPort =
+    rtspPort && rtspPort >= 554 && rtspPort <= 599 ? 2020 + (rtspPort - 554) : null;
+  const candidatePorts = [
+    ...new Set(
+      [mappedOnvifPort, envPort, 2020, 2021, 2022, 80, 8000].filter((p): p is number => Boolean(p && p > 0)),
+    ),
+  ];
   const getProfilesBody = `<trt:GetProfiles/>`;
 
   for (const port of candidatePorts) {
@@ -81,7 +89,7 @@ async function resolveOnvifTarget(host: string, username: string, password: stri
         const tokenMatch = /<[^:>]*:?Profiles[^>]*\btoken="([^"]+)"/i.exec(res.text);
         const profileToken = tokenMatch?.[1] ?? "profile_1";
         const target = { port, profileToken };
-        profileCache.set(host, target);
+        profileCache.set(cacheKey, target);
         return target;
       } catch {
         // Coba port/path ONVIF berikutnya
@@ -91,7 +99,7 @@ async function resolveOnvifTarget(host: string, username: string, password: stri
 
   throw new AppError({
     code: "INTERNAL_ERROR",
-    message: `Kamera (${host}) tidak merespons protokol ONVIF PTZ (port 2020/80). Pastikan fitur ONVIF/Account kamera aktif.`,
+    message: `Kamera (${host}) tidak merespons protokol ONVIF PTZ (port ${candidatePorts.join("/")}). Pastikan fitur ONVIF/Account kamera aktif.`,
   });
 }
 
@@ -136,9 +144,10 @@ export async function sendOnvifPtzCommand(params: {
   }
 
   const host = parsed.hostname;
+  const rtspPort = parsed.port ? Number.parseInt(parsed.port, 10) : null;
   const username = decodeURIComponent(parsed.username || "");
   const password = decodeURIComponent(parsed.password || "");
-  const target = await resolveOnvifTarget(host, username, password);
+  const target = await resolveOnvifTarget(host, rtspPort, username, password);
 
   const stopBody = `
     <tptz:Stop>

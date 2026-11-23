@@ -1,0 +1,12 @@
+# Konfigurasi go2rtc khusus untuk Audio Backchannel (Speaker Kamera)
+# Port dibuat berbeda dari MediaMTX agar tidak bentrok pada network_mode: host
+api:
+  listen: ":1984"
+
+rtsp:
+  listen: ":18554"
+
+webrtc:
+  listen: ":18555"
+
+streams: {}
