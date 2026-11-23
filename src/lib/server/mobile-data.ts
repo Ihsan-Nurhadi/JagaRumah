@@ -138,11 +138,37 @@ export async function recordingList(customerId: string, params: z.infer<typeof p
   if (params.camera_id) { values.push(params.camera_id); where.push(`r.device_id=$${values.length}::uuid`); }
   if (params.from) { values.push(params.from); where.push(`r.started_at >= $${values.length}`); }
   if (params.to) { values.push(params.to); where.push(`r.started_at <= $${values.length}`); }
+
   const at = cursor(params.cursor);
-  if (at) { values.push(at); where.push(`r.started_at < $${values.length}`); }
+  const havingParts: string[] = [];
+  if (at) {
+    values.push(at);
+    havingParts.push(`MIN(r.started_at) < $${values.length}`);
+  }
+  const havingClause = havingParts.length > 0 ? `HAVING ${havingParts.join(" AND ")}` : "";
+
   values.push(params.limit + 1);
   const rows = await query<any>(
-    `SELECT r.*,d.name camera_name,r.started_at cursor_value FROM camera_recordings r JOIN devices d ON d.id=r.device_id WHERE ${where.join(" AND ")} ORDER BY r.started_at DESC LIMIT $${values.length}`,
+    `SELECT
+       (ARRAY_AGG(r.id ORDER BY r.started_at ASC))[1] AS id,
+       r.device_id,
+       d.name AS camera_name,
+       'available'::text AS status,
+       MIN(r.started_at) AS started_at,
+       MAX(COALESCE(r.ended_at, r.started_at)) AS ended_at,
+       GREATEST(1, SUM(COALESCE(r.duration_seconds, 0))::int) AS duration_seconds,
+       SUM(COALESCE(r.file_size_bytes, 0))::bigint AS file_size_bytes,
+       MIN(r.expires_at) AS expires_at,
+       MIN(r.created_at) AS created_at,
+       MIN(r.started_at) AS cursor_value,
+       BOOL_OR(r.file_path IS NOT NULL) AS has_file
+     FROM camera_recordings r
+     JOIN devices d ON d.id = r.device_id
+     WHERE ${where.join(" AND ")}
+     GROUP BY r.device_id, d.name, floor(extract(epoch from r.started_at) / 600)
+     ${havingClause}
+     ORDER BY MIN(r.started_at) DESC
+     LIMIT $${values.length}`,
     values,
   );
   const page = pageMeta(rows, params.limit);
@@ -155,11 +181,11 @@ export async function recordingList(customerId: string, params: z.infer<typeof p
       started_at: date(r.started_at),
       ended_at: date(r.ended_at),
       duration_seconds: r.duration_seconds,
-      file_size_bytes: r.file_size_bytes ?? null,
-      thumbnail_url: r.thumbnail_url,
-      thumbnail_expires_at: date(r.thumbnail_expires_at),
-      playback_url: r.file_path ? `http://${publicHost}:701/api/v1/recordings/${r.id}/stream` : r.playback_url,
-      playback_expires_at: date(r.playback_expires_at ?? r.expires_at),
+      file_size_bytes: r.file_size_bytes !== null ? Number(r.file_size_bytes) : null,
+      thumbnail_url: null,
+      thumbnail_expires_at: null,
+      playback_url: r.has_file ? `http://${publicHost}:701/api/v1/recordings/${r.id}/stream` : null,
+      playback_expires_at: date(r.expires_at),
       expires_at: date(r.expires_at),
       created_at: date(r.created_at),
     })),
@@ -186,20 +212,60 @@ export async function markAlertRead(customerId: string, alertId?: string) {
 }
 export async function recordingDetail(customerId: string, recordingId: string) {
   const publicHost = process.env.MEDIAMTX_PUBLIC_HOST ?? "dev.nayakacloud.com";
-  const row = await queryOne<any>(
-    "SELECT r.*,d.name camera_name FROM camera_recordings r JOIN devices d ON d.id=r.device_id WHERE r.id=$1 AND d.customer_id=$2 AND r.started_at >= now() - interval '24 hours'",
+  const anchor = await queryOne<{ device_id: string; started_at: Date }>(
+    `SELECT r.device_id, r.started_at
+     FROM camera_recordings r
+     JOIN devices d ON d.id = r.device_id
+     WHERE r.id = $1 AND d.customer_id = $2 AND r.started_at >= now() - interval '24 hours'`,
     [recordingId, customerId],
   );
-  if (!row) throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Rekaman tidak ditemukan atau sudah kedaluwarsa (> 24 jam)." });
+  if (!anchor) {
+    throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Rekaman tidak ditemukan atau sudah kedaluwarsa (> 24 jam)." });
+  }
+
+  const bucketStartMs = Math.floor(new Date(anchor.started_at).getTime() / 600_000) * 600_000;
+  const bucketStartIso = new Date(bucketStartMs).toISOString();
+  const bucketEndIso = new Date(bucketStartMs + 600_000).toISOString();
+
+  const row = await queryOne<any>(
+    `SELECT
+       r.device_id,
+       d.name AS camera_name,
+       'available'::text AS status,
+       MIN(r.started_at) AS started_at,
+       MAX(COALESCE(r.ended_at, r.started_at)) AS ended_at,
+       GREATEST(1, SUM(COALESCE(r.duration_seconds, 0))::int) AS duration_seconds,
+       SUM(COALESCE(r.file_size_bytes, 0))::bigint AS file_size_bytes,
+       MIN(r.expires_at) AS expires_at,
+       MIN(r.created_at) AS created_at,
+       BOOL_OR(r.file_path IS NOT NULL) AS has_file
+     FROM camera_recordings r
+     JOIN devices d ON d.id = r.device_id
+     WHERE r.device_id = $1
+       AND r.status = 'available'
+       AND r.started_at >= $2
+       AND r.started_at < $3
+     GROUP BY r.device_id, d.name`,
+    [anchor.device_id, bucketStartIso, bucketEndIso],
+  );
+  if (!row) {
+    throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Rekaman tidak ditemukan atau sudah kedaluwarsa (> 24 jam)." });
+  }
+
   return {
     recording: {
-      ...row,
-      file_size_bytes: row.file_size_bytes ?? null,
-      playback_url: row.file_path ? `http://${publicHost}:701/api/v1/recordings/${row.id}/stream` : row.playback_url,
+      id: recordingId,
+      camera_id: row.device_id,
+      camera_name: row.camera_name,
+      status: row.status,
+      duration_seconds: row.duration_seconds,
+      file_size_bytes: row.file_size_bytes !== null ? Number(row.file_size_bytes) : null,
+      thumbnail_url: null,
+      thumbnail_expires_at: null,
+      playback_url: row.has_file ? `http://${publicHost}:701/api/v1/recordings/${recordingId}/stream` : null,
       started_at: date(row.started_at),
       ended_at: date(row.ended_at),
-      thumbnail_expires_at: date(row.thumbnail_expires_at),
-      playback_expires_at: date(row.playback_expires_at ?? row.expires_at),
+      playback_expires_at: date(row.expires_at),
       expires_at: date(row.expires_at),
       created_at: date(row.created_at),
     },

@@ -12,7 +12,7 @@ import { requireUuid } from "@/lib/server/request";
 import { routeHandler } from "@/lib/server/route";
 
 const execFileAsync = promisify(execFile);
-const MAX_CLIP_DURATION_MS = 30 * 60 * 1000;
+const MAX_CLIP_DURATION_MS = 60 * 60 * 1000;
 
 type Context = { params: Promise<{ camera_id?: string }> };
 
@@ -52,7 +52,7 @@ export const GET = routeHandler("mobile.cameras.clip", async (request, _requestI
   if (clipDurationMs > MAX_CLIP_DURATION_MS) {
     throw new AppError({
       code: "VALIDATION_ERROR",
-      message: "Durasi klip maksimal adalah 30 menit per permintaan.",
+      message: "Durasi klip maksimal adalah 60 menit per permintaan.",
     });
   }
 
