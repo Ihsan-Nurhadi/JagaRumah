@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import subprocess
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from aiohttp import web
 from pytapo import Tapo
 from pytapo.media_stream._utils import StreamType
 
@@ -40,10 +40,11 @@ async def send_talk_audio_async(payload: dict) -> dict:
     cloud_password = payload.get("cloud_password") or rtsp_password
     audio_path = payload["audio_path"]
 
-    alaw_bytes = transcode_to_alaw(audio_path)
+    alaw_bytes = await asyncio.to_thread(transcode_to_alaw, audio_path)
     print(f"[tapo-talk] sending {len(alaw_bytes)} bytes PCMA to {host}:{control_port}", flush=True)
 
-    tapo = Tapo(
+    tapo = await asyncio.to_thread(
+        Tapo,
         host=host,
         user="admin",
         password=cloud_password,
@@ -51,7 +52,7 @@ async def send_talk_audio_async(payload: dict) -> dict:
         controlPort=control_port,
     )
 
-    basic_info = tapo.getBasicInfo()
+    basic_info = await asyncio.to_thread(tapo.getBasicInfo)
     device_id = (
         basic_info.get("device_info", {}).get("basic_info", {}).get("dev_id")
         or ""
@@ -73,7 +74,6 @@ async def send_talk_audio_async(payload: dict) -> dict:
     )
 
     async with session:
-        # Mulai sesi talk dengan kamera
         async for _resp in session.transceive(talk_req):
             break
 
@@ -90,37 +90,24 @@ async def send_talk_audio_async(payload: dict) -> dict:
     return {"sent_bytes": len(alaw_bytes), "host": host, "control_port": control_port}
 
 
-class Handler(BaseHTTPRequestHandler):
-    def _send_json(self, status: int, body: dict):
-        raw = json.dumps(body).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(raw)))
-        self.end_headers()
-        self.wfile.write(raw)
+async def handle_health(_request: web.Request) -> web.Response:
+    return web.json_response({"ok": True})
 
-    def do_GET(self):
-        if self.path == "/health":
-            self._send_json(200, {"ok": True})
-            return
-        self._send_json(404, {"error": "Not found"})
 
-    def do_POST(self):
-        if self.path != "/talk":
-            self._send_json(404, {"error": "Not found"})
-            return
+async def handle_talk(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        result = await send_talk_audio_async(payload)
+        return web.json_response({"ok": True, **result})
+    except Exception as exc:
+        print(f"[tapo-talk] error: {exc}", flush=True)
+        return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length)
-            payload = json.loads(raw.decode("utf-8"))
-            result = asyncio.run(send_talk_audio_async(payload))
-            self._send_json(200, {"ok": True, **result})
-        except Exception as exc:
-            print(f"[tapo-talk] error: {exc}", flush=True)
-            self._send_json(500, {"ok": False, "error": str(exc)})
 
+app = web.Application()
+app.router.add_get("/health", handle_health)
+app.router.add_post("/talk", handle_talk)
 
 if __name__ == "__main__":
     print(f"[tapo-talk] worker listening on :{PORT}", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    web.run_app(app, host="0.0.0.0", port=PORT)
