@@ -31,10 +31,10 @@ async function ensureRecordingSchema(): Promise<void> {
 }
 
 /**
- * Mengonversi nama file rekaman MediaMTX (`YYYY-MM-DD_HH-MM-SS.mp4`) menjadi Date UTC.
+ * Mengonversi nama file rekaman MediaMTX (`YYYY-MM-DD_HH-MM-SS.mp4` atau `YYYY-MM-DD_HH-MM-SS-ffffff_Z.mp4`) menjadi Date UTC.
  */
 function parseSegmentStartTime(filename: string): Date | null {
-  const match = /^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.mp4$/i.exec(filename);
+  const match = /^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})(?:-\d+)?(?:_Z)?\.mp4$/i.exec(filename);
   if (!match) return null;
   const [, year, month, day, hour, minute, second] = match;
   const iso = `${year}-${month}-${day}T${hour}:${minute}:${second}Z`;
