@@ -35,5 +35,5 @@ services:
     restart: unless-stopped
     network_mode: "host"
     volumes:
-      - ./go2rtc.yaml:/config/go2rtc.yaml:ro
+      - ./go2rtc.yaml:/config/go2rtc.yaml
       - ./talk-tmp:/talk-tmp
