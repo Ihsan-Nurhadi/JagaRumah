@@ -94,19 +94,39 @@ export async function ensureMediamtxPath(name: string, source: string): Promise<
 
   let registered = false;
   for (const api of candidateApis) {
-    const init = { headers: { "Content-Type": "application/json" }, body, signal: AbortSignal.timeout(3000) };
     try {
-      let res = await fetch(`${api}/v3/config/paths/add/${name}`, { ...init, method: "POST" });
-      if (!res.ok) {
-        // Jika path sudah ada atau butuh update, coba PATCH
-        res = await fetch(`${api}/v3/config/paths/patch/${name}`, { ...init, method: "PATCH" });
+      // Cek dulu apakah path sudah terdaftar sebagai publisher agar tidak memicu reload MediaMTX berulang
+      const getRes = await fetch(`${api}/v3/config/paths/get/${name}`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      if (getRes.ok) {
+        const existing = (await getRes.json().catch(() => null)) as { source?: string; record?: boolean } | null;
+        if (existing?.source === "publisher" && existing?.record === true) {
+          registered = true;
+          break;
+        }
+        const patchRes = await fetch(`${api}/v3/config/paths/patch/${name}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body,
+          signal: AbortSignal.timeout(3000),
+        });
+        if (patchRes.ok) {
+          registered = true;
+          break;
+        }
+      } else {
+        const addRes = await fetch(`${api}/v3/config/paths/add/${name}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body,
+          signal: AbortSignal.timeout(3000),
+        });
+        if (addRes.ok) {
+          registered = true;
+          break;
+        }
       }
-      if (res.ok) {
-        registered = true;
-        break;
-      }
-      const errText = await res.text().catch(() => "");
-      console.warn(`[mediamtx] ${api} mengembalikan HTTP ${res.status} untuk path ${name}: ${errText}`);
     } catch {
       // Coba kandidat host API berikutnya
     }
