@@ -5,6 +5,7 @@ interface RelayEntry {
   streamKey: string;
   rtspUrl: string;
   process: ChildProcess | null;
+  startedAtMs: number;
   lastStartAttemptMs: number;
   stopping: boolean;
 }
@@ -56,7 +57,9 @@ async function resolveMediamtxRtspHost(): Promise<string> {
 
 function spawnRelayProcess(entry: RelayEntry, rtspHost: string): void {
   const targetUrl = `rtsp://${rtspHost}:8554/${entry.streamKey}`;
-  entry.lastStartAttemptMs = Date.now();
+  const now = Date.now();
+  entry.lastStartAttemptMs = now;
+  entry.startedAtMs = now;
 
   const child = spawn(
     "ffmpeg",
@@ -65,6 +68,8 @@ function spawnRelayProcess(entry: RelayEntry, rtspHost: string): void {
       "-hide_banner",
       "-loglevel",
       "warning",
+      "-rw_timeout",
+      "10000000",
       "-use_wallclock_as_timestamps",
       "1",
       "-rtsp_transport",
@@ -89,6 +94,8 @@ function spawnRelayProcess(entry: RelayEntry, rtspHost: string): void {
       "make_zero",
       "-max_interleave_delta",
       "0",
+      "-rw_timeout",
+      "10000000",
       "-f",
       "rtsp",
       "-rtsp_transport",
@@ -124,8 +131,13 @@ function spawnRelayProcess(entry: RelayEntry, rtspHost: string): void {
 
 /**
  * Memastikan relay FFmpeg (Video copy + Audio G711->AAC) berjalan untuk kamera tertentu.
+ * Jika `mediamtxReady === false` padahal proses sudah berjalan > 30 detik, proses dianggap macet lalu di-restart.
  */
-export async function ensureCameraRelay(streamKey: string, rtspUrl: string): Promise<void> {
+export async function ensureCameraRelay(
+  streamKey: string,
+  rtspUrl: string,
+  mediamtxReady?: boolean,
+): Promise<void> {
   if (!rtspUrl.startsWith("rtsp://")) return;
 
   const relays = getRelayMap();
@@ -143,13 +155,23 @@ export async function ensureCameraRelay(streamKey: string, rtspUrl: string): Pro
       streamKey,
       rtspUrl,
       process: null,
+      startedAtMs: 0,
       lastStartAttemptMs: 0,
       stopping: false,
     };
     relays.set(streamKey, entry);
   }
 
-  if (entry.process) return;
+  if (entry.process) {
+    if (mediamtxReady === false && Date.now() - entry.startedAtMs > 30_000) {
+      console.warn(`[audio-relay:${streamKey}] publisher tidak aktif >30s, me-restart ffmpeg yang macet`);
+      const stuck = entry.process;
+      entry.process = null;
+      stuck.kill("SIGKILL");
+    } else {
+      return;
+    }
+  }
   if (Date.now() - entry.lastStartAttemptMs < 10_000) return;
 
   const rtspHost = await resolveMediamtxRtspHost();

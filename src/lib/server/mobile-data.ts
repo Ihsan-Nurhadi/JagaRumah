@@ -93,6 +93,7 @@ export async function ensureMediamtxPath(name: string, source: string): Promise<
   });
 
   let registered = false;
+  let mediamtxReady: boolean | undefined;
   for (const api of candidateApis) {
     try {
       // Cek dulu apakah path sudah terdaftar sebagai publisher agar tidak memicu reload MediaMTX berulang
@@ -103,6 +104,13 @@ export async function ensureMediamtxPath(name: string, source: string): Promise<
         const existing = (await getRes.json().catch(() => null)) as { source?: string; record?: boolean } | null;
         if (existing?.source === "publisher" && existing?.record === true) {
           registered = true;
+          const statusRes = await fetch(`${api}/v3/paths/get/${name}`, {
+            signal: AbortSignal.timeout(2000),
+          }).catch(() => null);
+          if (statusRes?.ok) {
+            const pathStatus = (await statusRes.json().catch(() => null)) as { ready?: boolean } | null;
+            mediamtxReady = pathStatus?.ready;
+          }
           break;
         }
         const patchRes = await fetch(`${api}/v3/config/paths/patch/${name}`, {
@@ -137,7 +145,7 @@ export async function ensureMediamtxPath(name: string, source: string): Promise<
     return false;
   }
 
-  await ensureCameraRelay(name, source);
+  await ensureCameraRelay(name, source, mediamtxReady);
   return true;
 }
 
