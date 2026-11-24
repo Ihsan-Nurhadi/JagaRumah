@@ -20,6 +20,7 @@ services:
       - ./recordings:/recordings:ro
       - ./evidence:/evidence
       - ./talk-tmp:/talk-tmp
+      - ./firebase-service-account.json:/app/firebase-service-account.json:ro
 
   mediamtx:
     image: bluenviron/mediamtx:latest
