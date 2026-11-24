@@ -52,7 +52,7 @@ export const GET = routeHandler("admin.devices.alert_settings.get", async (_requ
 
 export const PATCH = routeHandler("admin.devices.alert_settings.patch", async (request, requestId, context) => {
   const admin = await requireAdmin();
-  requirePermission(admin, "device.write");
+  requirePermission(admin, "device.update");
   await requireCsrf(request);
 
   const deviceId = requireUuid((await (context as Context).params).device_id, "device_id");
