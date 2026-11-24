@@ -1,4 +1,5 @@
 import {
+  BellIcon,
   CameraIcon,
   ClipboardTextIcon,
   CreditCardIcon,
@@ -78,6 +79,14 @@ export const navModules: NavModule[] = [
         status: "ready",
         permission: "device.read",
         hint: "Kamera yang terdaftar, penugasannya ke pelanggan, dan riwayat klaim.",
+      },
+      {
+        label: "Notifikasi ONVIF",
+        href: "/alerts",
+        Icon: BellIcon,
+        status: "ready",
+        permission: "device.read",
+        hint: "Deteksi gerakan dan orang beserta bukti snapshot dan cuplikan video 10 detik.",
       },
     ],
   },

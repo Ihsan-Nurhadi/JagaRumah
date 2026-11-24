@@ -32,6 +32,7 @@ import { notifyError, notifySuccess } from "@/lib/alert";
 import { formatNumber } from "@/lib/format";
 import { toErrorMessage } from "@/lib/http";
 import { mutate, useApiQuery } from "@/lib/use-api";
+import { EvidencePreviewDialog, type AdminAlertRow } from "./alert-list";
 
 /*
   Detail perangkat.
@@ -500,6 +501,8 @@ export function DeviceDetail({ deviceId }: { deviceId: string }) {
           </ul>
         )}
       </section>
+
+      <DeviceOnvifAlertSection deviceId={deviceId} />
 
       <StreamPreviewDialog
         open={dialog === "stream"}
@@ -1029,5 +1032,151 @@ function EditStreamDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+type DeviceAlertSettings = {
+  motion_detection_enabled: boolean;
+  person_detection_enabled: boolean;
+  notifications_enabled: boolean;
+  cooldown_seconds: number;
+};
+
+function DeviceOnvifAlertSection({ deviceId }: { deviceId: string }) {
+  const settingsQuery = useApiQuery<{ settings: DeviceAlertSettings }>(
+    `/api/v1/admin/devices/${deviceId}/alert-settings`,
+  );
+  const alertsQuery = useApiQuery<{ alerts: AdminAlertRow[] }>(
+    `/api/v1/admin/alerts?device_id=${deviceId}&limit=5`,
+  );
+
+  const [form, setForm] = useState<DeviceAlertSettings>({
+    motion_detection_enabled: true,
+    person_detection_enabled: true,
+    notifications_enabled: true,
+    cooldown_seconds: 30,
+  });
+  const [saving, setSaving] = useState(false);
+  const [selectedAlert, setSelectedAlert] = useState<AdminAlertRow | null>(null);
+
+  useEffect(() => {
+    if (settingsQuery.status === "siap" && settingsQuery.data) {
+      setForm(settingsQuery.data.settings);
+    }
+  }, [settingsQuery.status, settingsQuery.data]);
+
+  async function saveSettings() {
+    setSaving(true);
+    try {
+      await mutate(`/api/v1/admin/devices/${deviceId}/alert-settings`, {
+        method: "PATCH",
+        body: form,
+      });
+      notifySuccess("Pengaturan deteksi ONVIF disimpan");
+      settingsQuery.reload();
+    } catch (error) {
+      notifyError("Gagal menyimpan pengaturan deteksi", toErrorMessage(error));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-4 border-t pt-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-base font-semibold">Deteksi ONVIF (Motion &amp; Person)</h2>
+          <p className="text-muted-foreground text-[13px]">
+            Pengaturan event ONVIF dari Tapo C500 serta riwayat bukti snapshot &amp; video 10 detik terbaru.
+          </p>
+        </div>
+        <Button type="button" variant="secondary" asChild>
+          <Link href="/alerts">Lihat semua notifikasi</Link>
+        </Button>
+      </div>
+
+      {settingsQuery.status === "siap" && settingsQuery.data && (
+        <div className="border-border bg-card flex flex-col gap-3 rounded-lg border p-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.motion_detection_enabled}
+                onChange={(e) => setForm((f) => ({ ...f, motion_detection_enabled: e.target.checked }))}
+              />
+              <span>Motion Detection</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.person_detection_enabled}
+                onChange={(e) => setForm((f) => ({ ...f, person_detection_enabled: e.target.checked }))}
+              />
+              <span>Person Detection</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.notifications_enabled}
+                onChange={(e) => setForm((f) => ({ ...f, notifications_enabled: e.target.checked }))}
+              />
+              <span>Push Notification</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <span>Cooldown (dtk):</span>
+              <input
+                type="number"
+                min={5}
+                max={3600}
+                value={form.cooldown_seconds}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, cooldown_seconds: Number.parseInt(e.target.value, 10) || 30 }))
+                }
+                className="border-input bg-background w-20 rounded border px-2 py-1 text-sm"
+              />
+            </label>
+          </div>
+          <div>
+            <Button type="button" onClick={saveSettings} disabled={saving}>
+              {saving ? "Menyimpan..." : "Simpan pengaturan ONVIF"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {alertsQuery.status === "siap" && alertsQuery.data && alertsQuery.data.alerts.length === 0 && (
+        <p className="text-muted-foreground text-sm">Belum ada deteksi ONVIF untuk perangkat ini.</p>
+      )}
+
+      {alertsQuery.status === "siap" && alertsQuery.data && alertsQuery.data.alerts.length > 0 && (
+        <ul className="divide-y rounded-lg border">
+          {alertsQuery.data.alerts.map((alert) => (
+            <li key={alert.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+              <div className="flex items-center gap-3">
+                {alert.snapshot_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={alert.snapshot_url}
+                    alt={alert.title}
+                    className="h-12 w-20 rounded object-cover"
+                  />
+                )}
+                <div>
+                  <p className="font-medium">{alert.title}</p>
+                  <p className="text-muted-foreground text-xs">
+                    <Timestamp value={alert.occurred_at} /> • Tipe: {alert.type}
+                  </p>
+                </div>
+              </div>
+              <Button type="button" variant="secondary" onClick={() => setSelectedAlert(alert)}>
+                Lihat Bukti
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <EvidencePreviewDialog alert={selectedAlert} onClose={() => setSelectedAlert(null)} />
+    </section>
   );
 }

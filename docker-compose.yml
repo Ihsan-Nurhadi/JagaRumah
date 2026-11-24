@@ -18,6 +18,7 @@ services:
       - HOSTNAME=0.0.0.0
     volumes:
       - ./recordings:/recordings:ro
+      - ./evidence:/evidence
       - ./talk-tmp:/talk-tmp
 
   mediamtx:
@@ -47,3 +48,19 @@ services:
     network_mode: "host"
     volumes:
       - ./talk-tmp:/talk-tmp
+
+  onvif-event-worker:
+    build:
+      context: ./onvif-event-worker
+      dockerfile: Dockerfile
+    container_name: nayaka-onvif-event-worker
+    restart: unless-stopped
+    network_mode: "host"
+    env_file:
+      - .env
+    environment:
+      - WEB_INTERNAL_URL=http://127.0.0.1:701
+      - MEDIAMTX_RTSP_BASE=rtsp://127.0.0.1:8554
+      - EVIDENCE_DIR=/evidence
+    volumes:
+      - ./evidence:/evidence

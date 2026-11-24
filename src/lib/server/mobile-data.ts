@@ -150,8 +150,8 @@ export async function alertList(customerId: string, params: z.infer<typeof pageS
   if (params.from) { values.push(params.from); where.push(`a.occurred_at >= $${values.length}`); }
   if (params.to) { values.push(params.to); where.push(`a.occurred_at <= $${values.length}`); }
   const at=cursor(params.cursor); if(at){values.push(at);where.push(`a.occurred_at < $${values.length}`);} values.push(params.limit+1);
-  const rows=await query<any>(`SELECT a.id,a.device_id,d.name camera_name,a.alert_type type,a.severity,a.title,a.message,a.thumbnail_url,a.thumbnail_expires_at,a.occurred_at,a.is_read,a.recording_id,a.occurred_at cursor_value FROM camera_alerts a JOIN devices d ON d.id=a.device_id WHERE ${where.join(" AND ")} ORDER BY a.occurred_at DESC LIMIT $${values.length}`,values); const page=pageMeta(rows,params.limit);
-  return { alerts: page.items.map((r)=>({id:r.id,camera_id:r.device_id,camera_name:r.camera_name,type:r.type,severity:r.severity,title:r.title,message:r.message,thumbnail_url:r.thumbnail_url,thumbnail_expires_at:date(r.thumbnail_expires_at),occurred_at:date(r.occurred_at),is_read:r.is_read,recording_id:r.recording_id})), pagination:page.pagination };
+  const rows=await query<any>(`SELECT a.id,a.device_id,d.name camera_name,a.alert_type type,a.severity,a.title,a.message,a.thumbnail_url,a.thumbnail_expires_at,a.occurred_at,a.is_read,a.recording_id,a.clip_path,a.clip_duration_seconds,a.evidence_status,a.occurred_at cursor_value FROM camera_alerts a JOIN devices d ON d.id=a.device_id WHERE ${where.join(" AND ")} ORDER BY a.occurred_at DESC LIMIT $${values.length}`,values); const page=pageMeta(rows,params.limit);
+  return { alerts: page.items.map((r)=>({id:r.id,camera_id:r.device_id,camera_name:r.camera_name,type:r.type,severity:r.severity,title:r.title,message:r.message,thumbnail_url:r.thumbnail_url,thumbnail_expires_at:date(r.thumbnail_expires_at),clip_url:r.clip_path ? `/api/v1/mobile/alerts/${r.id}/clip` : null,clip_duration_seconds:r.clip_duration_seconds ?? null,evidence_status:r.evidence_status ?? "none",occurred_at:date(r.occurred_at),is_read:r.is_read,recording_id:r.recording_id})), pagination:page.pagination };
 }
 
 export async function recordingList(customerId: string, params: z.infer<typeof pageSchema>) {
@@ -226,9 +226,18 @@ export async function settingsPatch(request: Request, customerId: string) { cons
 export async function dashboard(customerId:string){const s=await queryOne<any>("SELECT count(*) FILTER(WHERE d.status IN ('claimed','suspended'))::int total_count,count(*) FILTER(WHERE t.connection_status='active')::int active_count,count(*) FILTER(WHERE t.recording_status='recording')::int recording_count,count(*) FILTER(WHERE t.connection_status='offline')::int offline_count,count(*) FILTER(WHERE COALESCE(t.connection_status,'unknown')='unknown')::int unknown_count FROM devices d LEFT JOIN camera_telemetry t ON t.device_id=d.id WHERE d.customer_id=$1 AND d.status IN ('claimed','suspended')",[customerId]);const a=await alertList(customerId,{limit:5});const c=await cameraList(customerId,{limit:5});return {camera_summary:s,alert_summary:{unread_count:(await queryOne<any>("SELECT count(*)::int n FROM camera_alerts a JOIN devices d ON d.id=a.device_id WHERE d.customer_id=$1 AND NOT a.is_read",[customerId]))?.n??0},active_cameras:c, recent_alerts:a.alerts};}
 
 export async function alertDetail(customerId: string, alertId: string) {
-  const row = await queryOne<any>("SELECT a.id,a.device_id,d.name camera_name,a.alert_type type,a.severity,a.title,a.message,a.thumbnail_url,a.thumbnail_expires_at,a.occurred_at,a.is_read,a.recording_id FROM camera_alerts a JOIN devices d ON d.id=a.device_id WHERE a.id=$1 AND d.customer_id=$2", [alertId, customerId]);
+  const row = await queryOne<any>("SELECT a.id,a.device_id,d.name camera_name,a.alert_type type,a.severity,a.title,a.message,a.thumbnail_url,a.thumbnail_expires_at,a.clip_path,a.clip_duration_seconds,a.evidence_status,a.onvif_topic,a.occurred_at,a.is_read,a.recording_id FROM camera_alerts a JOIN devices d ON d.id=a.device_id WHERE a.id=$1 AND d.customer_id=$2", [alertId, customerId]);
   if (!row) throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Alert tidak ditemukan." });
-  return { alert: { ...row, thumbnail_expires_at: date(row.thumbnail_expires_at), occurred_at: date(row.occurred_at) } };
+  const { clip_path: clipPath, ...rest } = row;
+  return {
+    alert: {
+      ...rest,
+      camera_id: row.device_id,
+      clip_url: clipPath ? `/api/v1/mobile/alerts/${row.id}/clip` : null,
+      thumbnail_expires_at: date(row.thumbnail_expires_at),
+      occurred_at: date(row.occurred_at),
+    },
+  };
 }
 export async function markAlertRead(customerId: string, alertId?: string) {
   const result = alertId

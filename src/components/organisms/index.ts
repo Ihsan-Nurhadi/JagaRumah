@@ -1,5 +1,6 @@
 export { AuditConsole } from "./audit-console";
 export { ActionQueue } from "./action-queue";
+export { AlertList } from "./alert-list";
 export { AdminUserDetail } from "./admin-user-detail";
 export { AdminUserList } from "./admin-user-list";
 export { CustomerDetail } from "./customer-detail";
