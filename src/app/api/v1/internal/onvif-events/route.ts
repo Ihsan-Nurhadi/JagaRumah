@@ -21,7 +21,7 @@ const ingestSchema = z.object({
   device_id: z.string().uuid(),
   alert_type: z.enum(["motion", "person"]),
   onvif_topic: z.string().min(1).max(300),
-  occurred_at: z.string().datetime().optional(),
+  occurred_at: z.string().datetime({ offset: true }).optional(),
   snapshot_path: z.string().nullable().optional(),
   clip_path: z.string().nullable().optional(),
   clip_duration_seconds: z.number().int().min(0).max(120).nullable().optional(),

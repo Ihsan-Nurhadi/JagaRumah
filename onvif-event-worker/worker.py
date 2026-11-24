@@ -183,7 +183,7 @@ async def capture_and_report(
     device_id = camera["device_id"]
     stream_key = camera["stream_key"]
     alert_id = str(uuid.uuid4())
-    occurred_at = datetime.now(timezone.utc).isoformat()
+    occurred_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
     device_dir = EVIDENCE_DIR / device_id
     device_dir.mkdir(parents=True, exist_ok=True)
@@ -285,7 +285,7 @@ class CameraEventMonitor:
         self.camera = camera
 
     async def subscribe(self, urls: list[str], username: str, password: str) -> tuple[str, str] | None:
-        body = "<tev:CreatePullPointSubscription><tev:InitialTerminationTime>PT60S</tev:InitialTerminationTime></tev:CreatePullPointSubscription>"
+        body = "<tev:CreatePullPointSubscription><tev:InitialTerminationTime>PT300S</tev:InitialTerminationTime></tev:CreatePullPointSubscription>"
         last_err = ""
         for url in urls:
             try:
@@ -323,25 +323,19 @@ class CameraEventMonitor:
                 print(f"[onvif-worker] subscribed device={device_id} -> {sub_addr}", flush=True)
 
                 while not self._stop:
-                    if time.monotonic() - last_renew >= 40:
-                        renew_body = "<wsnt:Renew><wsnt:TerminationTime>PT60S</wsnt:TerminationTime></wsnt:Renew>"
-                        renew_soap = wrap_soap(renew_body, username, password)
-                        r_status, _ = await post_soap(self.http_session, sub_addr, renew_soap, timeout_sec=5.0)
-                        if r_status >= 400:
-                            print(f"[onvif-worker] renew HTTP {r_status} device={device_id}", flush=True)
-                            break
-                        last_renew = time.monotonic()
+                    if time.monotonic() - last_renew >= 240:
+                        # Beberapa kamera Tapo tidak mendukung wsnt:Renew dan langsung merespons 400;
+                        # cukup break untuk membuat PullPointSubscription baru secara bersih.
+                        break
 
                     pull_body = "<tev:PullMessages><tev:Timeout>PT25S</tev:Timeout><tev:MessageLimit>10</tev:MessageLimit></tev:PullMessages>"
                     pull_soap = wrap_soap(pull_body, username, password)
-                    p_status, p_text = await post_soap(self.http_session, sub_addr, pull_soap, timeout_sec=32.0)
+                    p_status, p_text = await post_soap(self.http_session, sub_addr, pull_soap, timeout_sec=35.0)
                     if p_status >= 400:
-                        print(f"[onvif-worker] pull HTTP {p_status} device={device_id}", flush=True)
+                        print(f"[onvif-worker] pull HTTP {p_status} device={device_id}, resubscribing...", flush=True)
                         break
 
                     parsed_events = parse_onvif_events(p_text)
-                    if "NotificationMessage" in p_text and not parsed_events:
-                        print(f"[onvif-worker] raw notification (unmatched) device={device_id}: {p_text[:500]}", flush=True)
 
                     for alert_type, topic in parsed_events:
                         if alert_type == "motion" and not self.camera.get("motion_detection_enabled", True):
@@ -359,7 +353,7 @@ class CameraEventMonitor:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                print(f"[onvif-worker] monitor error device={device_id}: {exc}", flush=True)
+                print(f"[onvif-worker] monitor error device={device_id}: {type(exc).__name__}: {exc}", flush=True)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
