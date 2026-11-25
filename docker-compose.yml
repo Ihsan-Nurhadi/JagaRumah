@@ -63,7 +63,10 @@ services:
       - WEB_INTERNAL_URL=http://127.0.0.1:701
       - MEDIAMTX_RTSP_BASE=rtsp://127.0.0.1:8554
       - EVIDENCE_DIR=/evidence
+      - RECORDINGS_DIR=/recordings
+      - CLIP_PRE_ROLL_SEC=4
       - ONNX_INTRA_THREADS=1
       - VEHICLE_MAX_CONCURRENCY=1
     volumes:
       - ./evidence:/evidence
+      - ./recordings:/recordings:ro

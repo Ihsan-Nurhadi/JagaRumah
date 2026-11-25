@@ -5,6 +5,7 @@ import hashlib
 import html
 import os
 from pathlib import Path
+import re
 import time
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -23,9 +24,12 @@ WEB_INTERNAL_URL = os.environ.get("WEB_INTERNAL_URL", "http://127.0.0.1:701").rs
 INTERNAL_WORKER_SECRET = os.environ.get("INTERNAL_WORKER_SECRET", "")
 MEDIAMTX_RTSP_BASE = os.environ.get("MEDIAMTX_RTSP_BASE", "rtsp://127.0.0.1:8554").rstrip("/")
 EVIDENCE_DIR = Path(os.environ.get("EVIDENCE_DIR", "/evidence"))
+RECORDINGS_DIR = Path(os.environ.get("RECORDINGS_DIR", "/recordings"))
 EVIDENCE_RETENTION_DAYS = int(os.environ.get("EVIDENCE_RETENTION_DAYS", "7"))
 CAMERA_SYNC_INTERVAL_SEC = int(os.environ.get("CAMERA_SYNC_INTERVAL_SEC", "60"))
 CLIP_DURATION_SEC = int(os.environ.get("CLIP_DURATION_SEC", "10"))
+CLIP_PRE_ROLL_SEC = float(os.environ.get("CLIP_PRE_ROLL_SEC", "4.0"))
+RECORDING_FLUSH_MARGIN_SEC = float(os.environ.get("RECORDING_FLUSH_MARGIN_SEC", "1.5"))
 VEHICLE_MAX_CONCURRENCY = max(1, int(os.environ.get("VEHICLE_MAX_CONCURRENCY", "1")))
 VEHICLE_BASELINE_REFRESH_SEC = int(os.environ.get("VEHICLE_BASELINE_REFRESH_SEC", "300"))
 VEHICLE_CONFIRM_DELAY_SEC = float(os.environ.get("VEHICLE_CONFIRM_DELAY_SEC", "1.5"))
@@ -185,6 +189,45 @@ async def run_ffmpeg(args: list[str], timeout_sec: float = 25.0) -> bool:
         return False
 
 
+SEGMENT_FILENAME_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})(?:-\d+)?(?:_Z)?\.mp4$",
+    re.IGNORECASE,
+)
+
+
+def parse_segment_start_epoch(file_path: Path, mtime: float) -> float | None:
+    match = SEGMENT_FILENAME_RE.match(file_path.name)
+    if not match:
+        return None
+    year, month, day, hour, minute, second = (int(g) for g in match.groups())
+    try:
+        dt_utc = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    ts = dt_utc.timestamp()
+    # Antisipasi jika suatu saat MediaMTX memakai TZ lokal (mis. WIB UTC+7) alih-alih UTC
+    if abs(ts - mtime) > 1800:
+        tz_offset = round((ts - (mtime - 150.0)) / 1800.0) * 1800.0
+        ts -= tz_offset
+    return ts
+
+
+def has_active_recording_segment(stream_key: str, max_age_sec: float = 30.0) -> bool:
+    cam_dir = RECORDINGS_DIR / stream_key
+    if not cam_dir.is_dir():
+        return False
+    now = time.time()
+    try:
+        for entry in cam_dir.iterdir():
+            if entry.is_file() and entry.suffix.lower() == ".mp4":
+                st = entry.stat()
+                if st.st_size > 0 and (now - st.st_mtime) <= max_age_sec:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 async def capture_snapshot(rtsp_local: str, dest: Path) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     return await run_ffmpeg(
@@ -204,7 +247,7 @@ async def capture_snapshot(rtsp_local: str, dest: Path) -> bool:
     )
 
 
-async def capture_clip(rtsp_local: str, dest: Path) -> bool:
+async def capture_clip_live(rtsp_local: str, dest: Path) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     return await run_ffmpeg(
         [
@@ -223,6 +266,158 @@ async def capture_clip(rtsp_local: str, dest: Path) -> bool:
         ],
         timeout_sec=float(CLIP_DURATION_SEC + 15),
     )
+
+
+async def capture_snapshot_and_clip_live(rtsp_local: str, snapshot_dest: Path, clip_dest: Path) -> tuple[bool, bool]:
+    """
+    Fallback jika /recordings tidak tersedia: ambil snapshot & klip 10 detik sekaligus
+    dalam 1 koneksi RTSP agar tidak ada jeda antrean antara foto dan video.
+    """
+    snapshot_dest.parent.mkdir(parents=True, exist_ok=True)
+    clip_dest.parent.mkdir(parents=True, exist_ok=True)
+    ok = await run_ffmpeg(
+        [
+            "-y",
+            "-rtsp_transport",
+            "tcp",
+            "-i",
+            rtsp_local,
+            "-frames:v",
+            "1",
+            "-q:v",
+            "3",
+            str(snapshot_dest),
+            "-t",
+            str(CLIP_DURATION_SEC),
+            "-c",
+            "copy",
+            "-movflags",
+            "+faststart",
+            str(clip_dest),
+        ],
+        timeout_sec=float(CLIP_DURATION_SEC + 15),
+    )
+    snap_ok = snapshot_dest.exists() and snapshot_dest.stat().st_size > 0
+    clip_ok = ok and clip_dest.exists() and clip_dest.stat().st_size > 0
+    return snap_ok, clip_ok
+
+
+async def capture_clip_from_recordings(stream_key: str, event_epoch: float, dest: Path) -> bool:
+    """
+    Memotong klip [event_epoch - pre_roll, event_epoch + post_roll] langsung dari segmen fMP4
+    24/7 milik MediaMTX (/recordings/<stream_key>/*.mp4) sehingga momen sebelum & saat
+    foto diambil ikut terekam secara sinkron.
+    """
+    cam_dir = RECORDINGS_DIR / stream_key
+    if not cam_dir.is_dir():
+        return False
+
+    pre_roll = min(max(0.0, CLIP_PRE_ROLL_SEC), float(CLIP_DURATION_SEC - 2))
+    post_roll = max(2.0, float(CLIP_DURATION_SEC) - pre_roll)
+    clip_start = event_epoch - pre_roll
+    clip_end = event_epoch + post_roll
+
+    wait_sec = (clip_end + RECORDING_FLUSH_MARGIN_SEC) - time.time()
+    if wait_sec > 0:
+        await asyncio.sleep(wait_sec)
+
+    segments: list[tuple[float, float, Path]] = []
+    try:
+        for entry in cam_dir.iterdir():
+            if not entry.is_file() or entry.suffix.lower() != ".mp4":
+                continue
+            st = entry.stat()
+            if st.st_size <= 0:
+                continue
+            start_ts = parse_segment_start_epoch(entry, st.st_mtime)
+            if start_ts is None:
+                continue
+            segments.append((start_ts, st.st_mtime, entry))
+    except OSError as exc:
+        print(f"[onvif-worker] gagal membaca /recordings/{stream_key}: {exc}", flush=True)
+        return False
+
+    if not segments:
+        return False
+
+    segments.sort(key=lambda item: item[0])
+
+    overlapping: list[tuple[float, float, Path]] = []
+    for idx, (start_ts, mtime, path_obj) in enumerate(segments):
+        next_start = segments[idx + 1][0] if idx + 1 < len(segments) else mtime
+        end_ts = max(mtime, min(next_start, start_ts + 310.0))
+        if end_ts >= (clip_start - 1.0) and start_ts <= (clip_end + 1.0):
+            overlapping.append((start_ts, end_ts, path_obj))
+
+    if not overlapping:
+        return False
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    seek_sec = max(0.0, clip_start - overlapping[0][0])
+    duration_sec = float(CLIP_DURATION_SEC)
+
+    if len(overlapping) == 1:
+        ok = await run_ffmpeg(
+            [
+                "-y",
+                "-ss",
+                f"{seek_sec:.2f}",
+                "-i",
+                str(overlapping[0][2]),
+                "-t",
+                f"{duration_sec:.2f}",
+                "-c",
+                "copy",
+                "-avoid_negative_ts",
+                "make_zero",
+                "-movflags",
+                "+faststart",
+                str(dest),
+            ],
+            timeout_sec=20.0,
+        )
+    else:
+        concat_list = Path("/tmp") / f"ev_concat_{uuid.uuid4().hex}.txt"
+        try:
+            lines = []
+            for _, _, seg_path in overlapping:
+                escaped = str(seg_path).replace("'", "'\\''")
+                lines.append(f"file '{escaped}'")
+            concat_list.write_text("\n".join(lines), encoding="utf-8")
+            ok = await run_ffmpeg(
+                [
+                    "-y",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(concat_list),
+                    "-ss",
+                    f"{seek_sec:.2f}",
+                    "-t",
+                    f"{duration_sec:.2f}",
+                    "-c",
+                    "copy",
+                    "-avoid_negative_ts",
+                    "make_zero",
+                    "-movflags",
+                    "+faststart",
+                    str(dest),
+                ],
+                timeout_sec=25.0,
+            )
+        finally:
+            concat_list.unlink(missing_ok=True)
+
+    return ok and dest.exists() and dest.stat().st_size > 4096
+
+
+async def capture_clip_synced(stream_key: str, rtsp_local: str, event_epoch: float, dest: Path) -> bool:
+    if await capture_clip_from_recordings(stream_key, event_epoch, dest):
+        return True
+    print(f"[onvif-worker] fallback live RTSP clip untuk stream={stream_key}", flush=True)
+    return await capture_clip_live(rtsp_local, dest)
 
 
 async def report_alert(http_session: aiohttp.ClientSession, payload: dict[str, Any]) -> None:
@@ -258,7 +453,9 @@ async def capture_and_report(
     device_id = camera["device_id"]
     stream_key = camera["stream_key"]
     alert_id = str(uuid.uuid4())
-    occurred_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    event_dt = datetime.now(timezone.utc)
+    event_epoch = event_dt.timestamp()
+    occurred_at = event_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
     snapshot_rel = f"{device_id}/{alert_id}.jpg"
     clip_rel = f"{device_id}/{alert_id}.mp4"
@@ -266,8 +463,14 @@ async def capture_and_report(
     clip_abs = EVIDENCE_DIR / clip_rel
 
     rtsp_local = f"{MEDIAMTX_RTSP_BASE}/{stream_key}"
-    snap_ok = await capture_snapshot(rtsp_local, snapshot_abs)
-    clip_ok = await capture_clip(rtsp_local, clip_abs)
+    if has_active_recording_segment(stream_key):
+        # Jalankan snapshot pada detik event sambil menunggu post-roll fMP4 di /recordings secara paralel
+        snap_ok, clip_ok = await asyncio.gather(
+            capture_snapshot(rtsp_local, snapshot_abs),
+            capture_clip_synced(stream_key, rtsp_local, event_epoch, clip_abs),
+        )
+    else:
+        snap_ok, clip_ok = await capture_snapshot_and_clip_live(rtsp_local, snapshot_abs, clip_abs)
 
     evidence_status = "ready" if (snap_ok or clip_ok) else "failed"
     payload = {
@@ -360,6 +563,7 @@ class CameraEventMonitor:
         last_ptz_at = self.camera.get("last_ptz_at")
 
         tmp_frame1 = EVIDENCE_DIR / device_id / f"_vcheck_{uuid.uuid4().hex[:8]}.jpg"
+        trigger_epoch = time.time()
         try:
             if not await capture_snapshot(rtsp_local, tmp_frame1):
                 return
@@ -388,10 +592,10 @@ class CameraEventMonitor:
                 snapshot_abs.unlink(missing_ok=True)
                 return
 
-            # Terkonfirmasi! Gambar bounding box bukti, rekam klip 10 detik, lalu kirim alert
+            # Terkonfirmasi! Gambar bounding box bukti, potong klip 10 detik (dengan pre-roll), lalu kirim alert
             self.last_alert_ts["vehicle"] = time.monotonic()
             await asyncio.to_thread(annotate_vehicle_snapshot, snapshot_abs, eval2, parking_zone)
-            clip_ok = await capture_clip(rtsp_local, clip_abs)
+            clip_ok = await capture_clip_synced(stream_key, rtsp_local, trigger_epoch, clip_abs)
             self.vehicle_tracker.commit_baseline(eval2.vehicles_in_zone)
 
             evidence_status = "ready" if (snap_ok or clip_ok) else "failed"
