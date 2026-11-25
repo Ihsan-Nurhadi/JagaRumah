@@ -200,7 +200,9 @@ export async function sendOnvifPtzCommand(params: {
   await sendPtzSoap(host, target.port, username, password, moveBody);
 
   if (params.durationMs > 0) {
-    await new Promise((resolve) => setTimeout(resolve, params.durationMs));
+    // Motor Tapo C500 butuh jeda minimal ~900ms sebelum Stop agar gerakan klik tombol terlihat jelas
+    const effectiveDurationMs = Math.max(900, params.durationMs);
+    await new Promise((resolve) => setTimeout(resolve, effectiveDurationMs));
     await sendPtzSoap(host, target.port, username, password, stopBody).catch(() => {});
   }
 }
