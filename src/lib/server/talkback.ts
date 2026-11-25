@@ -103,3 +103,70 @@ export async function sendAudioToCameraSpeaker(params: {
     await unlink(rawInputPath).catch(() => {});
   }
 }
+
+/**
+ * Membunyikan sirine alarm pada kamera Tapo C500 tanpa menunggu motion lewat worker `pytapo`.
+ */
+export async function triggerCameraSiren(params: {
+  rtspUrl: string;
+  durationSeconds?: number;
+}): Promise<{ mode: string }> {
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(params.rtspUrl);
+  } catch {
+    throw new AppError({ code: "VALIDATION_ERROR", message: "Format RTSP URL kamera tidak valid." });
+  }
+
+  const host = parsedUrl.hostname;
+  const rtspPort = parsedUrl.port ? Number.parseInt(parsedUrl.port, 10) : null;
+  const rtspUser = decodeURIComponent(parsedUrl.username || "");
+  const rtspPassword = decodeURIComponent(parsedUrl.password || "");
+  const cloudPassword = process.env.TAPO_CLOUD_PASSWORD || rtspPassword;
+  const controlPort = resolveControlPort(rtspPort);
+  const durationSeconds = Math.max(3, Math.min(20, params.durationSeconds ?? 8));
+
+  const candidates = getWorkerCandidates();
+  let res: Response | null = null;
+  let lastErr: unknown = null;
+
+  for (const base of candidates) {
+    try {
+      res = await fetch(`${base}/siren`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          host,
+          control_port: controlPort,
+          rtsp_user: rtspUser,
+          rtsp_password: rtspPassword,
+          cloud_password: cloudPassword,
+          duration_seconds: durationSeconds,
+        }),
+        signal: AbortSignal.timeout(35000),
+      });
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  if (!res) {
+    console.error("[tapo-siren] gagal menjangkau worker pytapo:", lastErr);
+    throw new AppError({
+      code: "INTERNAL_ERROR",
+      message: "Layanan sirine (tapo-talk worker) belum aktif atau tidak terjangkau.",
+    });
+  }
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new AppError({
+      code: "INTERNAL_ERROR",
+      message: `Gagal membunyikan sirine kamera (HTTP ${res.status}): ${errBody}`,
+    });
+  }
+
+  const data = (await res.json().catch(() => ({}))) as { mode?: string };
+  return { mode: data.mode ?? "speaker_siren" };
+}
