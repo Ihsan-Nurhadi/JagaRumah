@@ -49,6 +49,7 @@ services:
     network_mode: "host"
     volumes:
       - ./talk-tmp:/talk-tmp
+      - ./sirine:/sirine:ro
 
   onvif-event-worker:
     build:

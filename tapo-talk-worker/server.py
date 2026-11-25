@@ -7,10 +7,12 @@ from pytapo import Tapo
 from pytapo.media_stream.talk import Talk
 
 PORT = int(os.environ.get("PORT", "8099"))
+SIRINE_DIR = os.environ.get("SIRINE_DIR", "/sirine")
+AUDIO_EXTS = (".mpeg", ".mp3", ".wav", ".m4a", ".aac", ".ogg", ".opus")
 
 # Cache koneksi Tapo agar tidak perlu login ulang pada setiap permintaan talk/siren
 _tapo_clients: dict[tuple[str, int, str], Tapo] = {}
-_siren_cache: dict[int, bytes] = {}
+_siren_cache: dict[tuple[str, float, int], bytes] = {}
 
 
 def get_tapo_client(host: str, control_port: int, cloud_password: str, force_new: bool = False) -> Tapo:
@@ -60,11 +62,68 @@ def transcode_to_alaw(audio_path: str) -> bytes:
     return proc.stdout
 
 
-def generate_siren_alaw(duration_seconds: int) -> bytes:
-    if duration_seconds in _siren_cache:
-        return _siren_cache[duration_seconds]
+def find_custom_siren_file() -> tuple[str, float] | None:
+    if not os.path.isdir(SIRINE_DIR):
+        return None
+    for name in sorted(os.listdir(SIRINE_DIR)):
+        if name.lower().endswith(AUDIO_EXTS):
+            full = os.path.join(SIRINE_DIR, name)
+            if os.path.isfile(full):
+                return full, os.path.getmtime(full)
+    return None
 
-    # Nada sirine naik-turun (750Hz <-> 1250Hz, siklus ~1.2 detik) berformat PCMA 8kHz mono
+
+def generate_siren_alaw(duration_seconds: int) -> bytes:
+    custom = find_custom_siren_file()
+    if custom:
+        file_path, mtime = custom
+        cache_key = (file_path, mtime, duration_seconds)
+        if cache_key in _siren_cache:
+            return _siren_cache[cache_key]
+
+        print(f"[tapo-siren] memakai file custom sirine: {file_path}", flush=True)
+        proc = subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-stream_loop",
+                "-1",
+                "-i",
+                file_path,
+                "-t",
+                str(duration_seconds),
+                "-vn",
+                "-sn",
+                "-dn",
+                "-af",
+                "adelay=200:all=1",
+                "-ac",
+                "1",
+                "-ar",
+                "8000",
+                "-c:a",
+                "pcm_alaw",
+                "-f",
+                "alaw",
+                "pipe:1",
+            ],
+            capture_output=True,
+            timeout=20,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            stderr = proc.stderr.decode("utf-8", errors="ignore")
+            raise RuntimeError(f"FFmpeg decode file sirine gagal: {stderr[-300:]}")
+        _siren_cache[cache_key] = proc.stdout
+        return proc.stdout
+
+    fallback_key = ("__builtin__", 0.0, duration_seconds)
+    if fallback_key in _siren_cache:
+        return _siren_cache[fallback_key]
+
+    # Fallback: nada sirine naik-turun (750Hz <-> 1250Hz, siklus ~1.2 detik) berformat PCMA 8kHz mono
     expr = "0.9*sin(2*PI*(1000+250*sin(2*PI*t/1.2))*t)"
     proc = subprocess.run(
         [
@@ -95,7 +154,7 @@ def generate_siren_alaw(duration_seconds: int) -> bytes:
     if proc.returncode != 0 or not proc.stdout:
         stderr = proc.stderr.decode("utf-8", errors="ignore")
         raise RuntimeError(f"FFmpeg generate siren gagal: {stderr[-300:]}")
-    _siren_cache[duration_seconds] = proc.stdout
+    _siren_cache[fallback_key] = proc.stdout
     return proc.stdout
 
 
