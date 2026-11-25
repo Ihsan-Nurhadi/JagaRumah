@@ -32,6 +32,7 @@ export type AdminAlertRow = {
   clip_duration_seconds: number | null;
   evidence_status: string;
   onvif_topic: string | null;
+  metadata?: Record<string, unknown> | null;
   occurred_at: string;
   is_read: boolean;
 };
@@ -42,12 +43,13 @@ type AlertsResponse = {
 
 const TYPE_FILTERS = [
   { key: "all", label: "Semua" },
+  { key: "vehicle", label: "Kendaraan (AI)" },
   { key: "person", label: "Person Detected" },
   { key: "motion", label: "Motion Detected" },
 ] as const;
 
 export function AlertList() {
-  const [typeFilter, setTypeFilter] = useState<"all" | "person" | "motion">("all");
+  const [typeFilter, setTypeFilter] = useState<"all" | "vehicle" | "person" | "motion">("all");
   const [selected, setSelected] = useState<AdminAlertRow | null>(null);
 
   const queryUrl =
@@ -60,8 +62,8 @@ export function AlertList() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Notifikasi Deteksi (ONVIF)"
-        description="Riwayat deteksi gerakan dan orang dari kamera Tapo C500 beserta bukti gambar snapshot dan cuplikan video 10 detik."
+        title="Notifikasi Deteksi (ONVIF & AI Kendaraan)"
+        description="Riwayat deteksi gerakan, orang, dan kendaraan/parkir dari kamera CCTV beserta bukti gambar snapshot dan cuplikan video 10 detik."
         actions={
           <Button type="button" variant="secondary" onClick={() => query.reload()}>
             Muat ulang
@@ -124,10 +126,22 @@ export function AlertList() {
                 <div className="absolute top-2 left-2 flex gap-1.5">
                   <span
                     className={`rounded px-2 py-0.5 text-[11px] font-semibold text-white ${
-                      alert.type === "person" ? "bg-red-600" : "bg-amber-600"
+                      alert.type === "vehicle"
+                        ? alert.severity === "critical"
+                          ? "bg-rose-600"
+                          : "bg-blue-600"
+                        : alert.type === "person"
+                          ? "bg-red-600"
+                          : "bg-amber-600"
                     }`}
                   >
-                    {alert.type === "person" ? "Person" : "Motion"}
+                    {alert.type === "vehicle"
+                      ? alert.severity === "critical"
+                        ? "Kendaraan Kritis"
+                        : "Kendaraan"
+                      : alert.type === "person"
+                        ? "Person"
+                        : "Motion"}
                   </span>
                   {alert.clip_url && (
                     <span className="rounded bg-black/75 px-2 py-0.5 text-[11px] font-medium text-white">
@@ -212,6 +226,22 @@ export function EvidencePreviewDialog({
 
         {alert && (
           <div className="flex flex-col gap-3">
+            {alert.type === "vehicle" && alert.metadata && (
+              <div className="bg-muted/60 text-muted-foreground flex flex-wrap gap-x-4 gap-y-1 rounded-md border px-3 py-2 text-xs">
+                {typeof alert.metadata.sub_type === "string" && (
+                  <span>Status: <strong className="text-foreground">{alert.metadata.sub_type}</strong></span>
+                )}
+                {typeof alert.metadata.vehicle_class === "string" && (
+                  <span>Objek: <strong className="text-foreground">{alert.metadata.vehicle_class}</strong></span>
+                )}
+                {typeof alert.metadata.confidence === "number" && (
+                  <span>Keyakinan: <strong className="text-foreground">{Math.round(alert.metadata.confidence * 100)}%</strong></span>
+                )}
+                {typeof alert.metadata.count_before === "number" && typeof alert.metadata.count_after === "number" && (
+                  <span>Jumlah di zona: <strong className="text-foreground">{alert.metadata.count_before} → {alert.metadata.count_after}</strong></span>
+                )}
+              </div>
+            )}
             <div className="flex gap-2">
               <Button
                 type="button"

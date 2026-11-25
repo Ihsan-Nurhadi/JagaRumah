@@ -45,6 +45,17 @@ export const POST = routeHandler("mobile.cameras.ptz", async (request, requestId
     durationMs: input.duration_ms,
   });
 
+  // Catat waktu PTZ terakhir agar worker AI mengkalibrasi ulang baseline kendaraan parkir
+  await queryOne(
+    `INSERT INTO camera_alert_settings (device_id, last_ptz_at, updated_at)
+     VALUES ($1, now(), now())
+     ON CONFLICT (device_id) DO UPDATE SET
+       last_ptz_at = now(),
+       updated_at = now()
+     RETURNING device_id`,
+    [cameraId],
+  ).catch(() => {});
+
   return ok(
     {
       camera_id: cameraId,

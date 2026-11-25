@@ -502,7 +502,7 @@ export function DeviceDetail({ deviceId }: { deviceId: string }) {
         )}
       </section>
 
-      <DeviceOnvifAlertSection deviceId={deviceId} />
+      <DeviceOnvifAlertSection deviceId={deviceId} hasStream={Boolean(device.stream_url)} />
 
       <StreamPreviewDialog
         open={dialog === "stream"}
@@ -1035,14 +1035,24 @@ function EditStreamDialog({
   );
 }
 
+type ParkingZoneBox = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
+
 type DeviceAlertSettings = {
   motion_detection_enabled: boolean;
   person_detection_enabled: boolean;
+  vehicle_detection_enabled: boolean;
+  vehicle_guard_mode: boolean;
+  parking_zone: ParkingZoneBox | null;
   notifications_enabled: boolean;
   cooldown_seconds: number;
 };
 
-function DeviceOnvifAlertSection({ deviceId }: { deviceId: string }) {
+function DeviceOnvifAlertSection({ deviceId, hasStream }: { deviceId: string; hasStream: boolean }) {
   const settingsQuery = useApiQuery<{ settings: DeviceAlertSettings }>(
     `/api/v1/admin/devices/${deviceId}/alert-settings`,
   );
@@ -1053,26 +1063,39 @@ function DeviceOnvifAlertSection({ deviceId }: { deviceId: string }) {
   const [form, setForm] = useState<DeviceAlertSettings>({
     motion_detection_enabled: true,
     person_detection_enabled: true,
+    vehicle_detection_enabled: true,
+    vehicle_guard_mode: false,
+    parking_zone: null,
     notifications_enabled: true,
     cooldown_seconds: 30,
   });
   const [saving, setSaving] = useState(false);
+  const [zoneDialogOpen, setZoneDialogOpen] = useState(false);
   const [selectedAlert, setSelectedAlert] = useState<AdminAlertRow | null>(null);
 
   useEffect(() => {
     if (settingsQuery.status === "siap" && settingsQuery.data) {
-      setForm(settingsQuery.data.settings);
+      setForm({
+        motion_detection_enabled: settingsQuery.data.settings.motion_detection_enabled,
+        person_detection_enabled: settingsQuery.data.settings.person_detection_enabled,
+        vehicle_detection_enabled: settingsQuery.data.settings.vehicle_detection_enabled ?? true,
+        vehicle_guard_mode: settingsQuery.data.settings.vehicle_guard_mode ?? false,
+        parking_zone: settingsQuery.data.settings.parking_zone ?? null,
+        notifications_enabled: settingsQuery.data.settings.notifications_enabled,
+        cooldown_seconds: settingsQuery.data.settings.cooldown_seconds,
+      });
     }
   }, [settingsQuery.status, settingsQuery.data]);
 
-  async function saveSettings() {
+  async function saveSettings(nextForm?: DeviceAlertSettings) {
+    const payload = nextForm ?? form;
     setSaving(true);
     try {
       await mutate(`/api/v1/admin/devices/${deviceId}/alert-settings`, {
         method: "PATCH",
-        body: form,
+        body: payload,
       });
-      notifySuccess("Pengaturan deteksi ONVIF disimpan");
+      notifySuccess("Pengaturan deteksi disimpan");
       settingsQuery.reload();
     } catch (error) {
       notifyError("Gagal menyimpan pengaturan deteksi", toErrorMessage(error));
@@ -1085,9 +1108,9 @@ function DeviceOnvifAlertSection({ deviceId }: { deviceId: string }) {
     <section className="flex flex-col gap-4 border-t pt-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-base font-semibold">Deteksi ONVIF (Motion &amp; Person)</h2>
+          <h2 className="text-base font-semibold">Deteksi ONVIF &amp; AI Kendaraan</h2>
           <p className="text-muted-foreground text-[13px]">
-            Pengaturan event ONVIF dari Tapo C500 serta riwayat bukti snapshot &amp; video 10 detik terbaru.
+            Pengaturan event ONVIF (Motion/Person), AI Deteksi Kendaraan &amp; Zona Parkir, serta riwayat bukti terbaru.
           </p>
         </div>
         <Button type="button" variant="secondary" asChild>
@@ -1096,8 +1119,8 @@ function DeviceOnvifAlertSection({ deviceId }: { deviceId: string }) {
       </div>
 
       {settingsQuery.status === "siap" && settingsQuery.data && (
-        <div className="border-border bg-card flex flex-col gap-3 rounded-lg border p-4">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="border-border bg-card flex flex-col gap-4 rounded-lg border p-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -1113,6 +1136,31 @@ function DeviceOnvifAlertSection({ deviceId }: { deviceId: string }) {
                 onChange={(e) => setForm((f) => ({ ...f, person_detection_enabled: e.target.checked }))}
               />
               <span>Person Detection</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.vehicle_detection_enabled}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vehicle_detection_enabled: e.target.checked,
+                    vehicle_guard_mode: e.target.checked ? f.vehicle_guard_mode : false,
+                  }))
+                }
+              />
+              <span>Deteksi Kendaraan (AI)</span>
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.vehicle_guard_mode}
+                disabled={!form.vehicle_detection_enabled}
+                onChange={(e) => setForm((f) => ({ ...f, vehicle_guard_mode: e.target.checked }))}
+              />
+              <span className={!form.vehicle_detection_enabled ? "text-muted-foreground" : undefined}>
+                Mode Jaga Parkir (Anti-Maling)
+              </span>
             </label>
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -1136,16 +1184,38 @@ function DeviceOnvifAlertSection({ deviceId }: { deviceId: string }) {
               />
             </label>
           </div>
-          <div>
-            <Button type="button" onClick={saveSettings} disabled={saving}>
-              {saving ? "Menyimpan..." : "Simpan pengaturan ONVIF"}
-            </Button>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3">
+            <div className="text-muted-foreground text-xs">
+              Zona Parkir:{" "}
+              {form.parking_zone ? (
+                <span className="text-foreground font-medium">
+                  Zona Kustom ({Math.round((form.parking_zone.x2 - form.parking_zone.x1) * 100)}% ×{" "}
+                  {Math.round((form.parking_zone.y2 - form.parking_zone.y1) * 100)}% layar)
+                </span>
+              ) : (
+                <span className="text-foreground font-medium">Seluruh Layar (Otomatis)</span>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!form.vehicle_detection_enabled}
+                onClick={() => setZoneDialogOpen(true)}
+              >
+                Atur Zona Parkir
+              </Button>
+              <Button type="button" onClick={() => void saveSettings()} disabled={saving}>
+                {saving ? "Menyimpan..." : "Simpan pengaturan"}
+              </Button>
+            </div>
           </div>
         </div>
       )}
 
       {alertsQuery.status === "siap" && alertsQuery.data && alertsQuery.data.alerts.length === 0 && (
-        <p className="text-muted-foreground text-sm">Belum ada deteksi ONVIF untuk perangkat ini.</p>
+        <p className="text-muted-foreground text-sm">Belum ada deteksi untuk perangkat ini.</p>
       )}
 
       {alertsQuery.status === "siap" && alertsQuery.data && alertsQuery.data.alerts.length > 0 && (
@@ -1176,7 +1246,165 @@ function DeviceOnvifAlertSection({ deviceId }: { deviceId: string }) {
         </ul>
       )}
 
+      <ParkingZoneDialog
+        open={zoneDialogOpen}
+        deviceId={deviceId}
+        hasStream={hasStream}
+        initialZone={form.parking_zone}
+        onClose={() => setZoneDialogOpen(false)}
+        onApply={(nextZone) => {
+          const updated = { ...form, parking_zone: nextZone };
+          setForm(updated);
+          setZoneDialogOpen(false);
+          void saveSettings(updated);
+        }}
+      />
+
       <EvidencePreviewDialog alert={selectedAlert} onClose={() => setSelectedAlert(null)} />
     </section>
+  );
+}
+
+function ParkingZoneDialog({
+  open,
+  deviceId,
+  hasStream,
+  initialZone,
+  onClose,
+  onApply,
+}: {
+  open: boolean;
+  deviceId: string;
+  hasStream: boolean;
+  initialZone: ParkingZoneBox | null;
+  onClose: () => void;
+  onApply: (zone: ParkingZoneBox | null) => void;
+}) {
+  const [zone, setZone] = useState<ParkingZoneBox | null>(initialZone);
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
+  const [snapshotNonce, setSnapshotNonce] = useState(0);
+
+  useEffect(() => {
+    if (open) {
+      setZone(initialZone);
+      setSnapshotNonce((n) => n + 1);
+    }
+  }, [open, initialZone]);
+
+  function getRelativePoint(e: React.PointerEvent<HTMLDivElement>): { x: number; y: number } {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    const y = Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height));
+    return { x, y };
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+    >
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Atur Zona Parkir Kendaraan</DialogTitle>
+          <DialogDescription>
+            Klik dan seret (drag) pada gambar kamera untuk membuat kotak area parkir. Hanya kendaraan di dalam zona ini yang akan dipantau oleh AI.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-3">
+          <div
+            className="relative aspect-video w-full cursor-crosshair select-none overflow-hidden rounded-md border bg-black touch-none"
+            onPointerDown={(e) => {
+              const pt = getRelativePoint(e);
+              setDragStart(pt);
+              setZone({ x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y });
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!dragStart) return;
+              const pt = getRelativePoint(e);
+              setZone({
+                x1: Math.min(dragStart.x, pt.x),
+                y1: Math.min(dragStart.y, pt.y),
+                x2: Math.max(dragStart.x, pt.x),
+                y2: Math.max(dragStart.y, pt.y),
+              });
+            }}
+            onPointerUp={() => {
+              setDragStart(null);
+              setZone((cur) => {
+                if (!cur) return null;
+                if (cur.x2 - cur.x1 < 0.05 || cur.y2 - cur.y1 < 0.05) return initialZone;
+                return {
+                  x1: Number(cur.x1.toFixed(4)),
+                  y1: Number(cur.y1.toFixed(4)),
+                  x2: Number(cur.x2.toFixed(4)),
+                  y2: Number(cur.y2.toFixed(4)),
+                };
+              });
+            }}
+          >
+            {hasStream ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={`/api/v1/admin/devices/${deviceId}/stream?zone=${snapshotNonce}`}
+                alt="Snapshot kamera untuk zona parkir"
+                draggable={false}
+                className="pointer-events-none h-full w-full object-fill"
+              />
+            ) : (
+              <div className="flex h-full w-full items-center justify-center text-xs text-white/70">
+                Stream URL belum diatur. Anda tetap dapat menggambar kotak perkiraan area.
+              </div>
+            )}
+
+            {zone && (
+              <div
+                className="pointer-events-none absolute border-2 border-cyan-400 bg-cyan-400/20"
+                style={{
+                  left: `${zone.x1 * 100}%`,
+                  top: `${zone.y1 * 100}%`,
+                  width: `${(zone.x2 - zone.x1) * 100}%`,
+                  height: `${(zone.y2 - zone.y1) * 100}%`,
+                }}
+              >
+                <span className="absolute top-1 left-1 rounded bg-cyan-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                  ZONA PARKIR
+                </span>
+              </div>
+            )}
+          </div>
+
+          <div className="text-muted-foreground flex items-center justify-between text-xs">
+            <span>
+              {zone
+                ? `Koordinat: x1=${zone.x1.toFixed(2)}, y1=${zone.y1.toFixed(2)}, x2=${zone.x2.toFixed(2)}, y2=${zone.y2.toFixed(2)}`
+                : "Belum ada kotak kustom — seluruh layar akan dipantau."}
+            </span>
+            {hasStream && (
+              <Button type="button" variant="ghost" onClick={() => setSnapshotNonce((n) => n + 1)}>
+                Segarkan foto
+              </Button>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 sm:justify-between">
+          <Button type="button" variant="outline" onClick={() => setZone(null)}>
+            Reset Seluruh Layar
+          </Button>
+          <div className="flex gap-2">
+            <Button type="button" variant="secondary" onClick={onClose}>
+              Batal
+            </Button>
+            <Button type="button" onClick={() => onApply(zone)}>
+              Simpan Zona Parkir
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

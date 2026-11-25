@@ -21,7 +21,7 @@ export const GET = routeHandler("admin.alerts.list", async (request, requestId) 
     values.push(deviceId);
     where.push(`a.device_id = $${values.length}::uuid`);
   }
-  if (alertType && ["motion", "person"].includes(alertType)) {
+  if (alertType && ["motion", "person", "vehicle"].includes(alertType)) {
     values.push(alertType);
     where.push(`a.alert_type = $${values.length}`);
   }
@@ -48,6 +48,7 @@ export const GET = routeHandler("admin.alerts.list", async (request, requestId) 
     clip_duration_seconds: number | null;
     evidence_status: string;
     onvif_topic: string | null;
+    metadata: Record<string, unknown> | null;
     occurred_at: Date;
     is_read: boolean;
   }>(
@@ -66,6 +67,7 @@ export const GET = routeHandler("admin.alerts.list", async (request, requestId) 
             a.clip_duration_seconds,
             a.evidence_status,
             a.onvif_topic,
+            a.metadata,
             a.occurred_at,
             a.is_read
      FROM camera_alerts a
@@ -93,6 +95,7 @@ export const GET = routeHandler("admin.alerts.list", async (request, requestId) 
     clip_duration_seconds: r.clip_duration_seconds,
     evidence_status: r.evidence_status,
     onvif_topic: r.onvif_topic,
+    metadata: r.metadata ?? null,
     occurred_at: r.occurred_at.toISOString(),
     is_read: r.is_read,
   }));

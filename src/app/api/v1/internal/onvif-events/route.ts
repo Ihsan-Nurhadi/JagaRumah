@@ -6,6 +6,7 @@ import { AppError } from "@/lib/server/errors";
 import { parseJson } from "@/lib/server/parse";
 import { ok } from "@/lib/server/request";
 import { routeHandler } from "@/lib/server/route";
+import { normalizeParkingZone } from "@/lib/server/vehicle-zone";
 
 function assertInternalSecret(request: Request): void {
   const expected = process.env.INTERNAL_WORKER_SECRET?.trim();
@@ -19,14 +20,70 @@ function assertInternalSecret(request: Request): void {
 const ingestSchema = z.object({
   alert_id: z.string().uuid(),
   device_id: z.string().uuid(),
-  alert_type: z.enum(["motion", "person"]),
+  alert_type: z.enum(["motion", "person", "vehicle"]),
   onvif_topic: z.string().min(1).max(300),
   occurred_at: z.string().datetime({ offset: true }).optional(),
   snapshot_path: z.string().nullable().optional(),
   clip_path: z.string().nullable().optional(),
   clip_duration_seconds: z.number().int().min(0).max(120).nullable().optional(),
   evidence_status: z.enum(["none", "processing", "ready", "failed"]).default("ready"),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
 });
+
+function resolveAlertCopy(
+  alertType: "motion" | "person" | "vehicle",
+  cameraName: string,
+  metadata: Record<string, unknown> | null | undefined,
+): { severity: "info" | "warning" | "critical"; title: string; message: string } {
+  if (alertType === "person") {
+    return {
+      severity: "critical",
+      title: "Orang Terdeteksi",
+      message: `Seseorang terdeteksi di area kamera ${cameraName}.`,
+    };
+  }
+  if (alertType === "vehicle") {
+    const subType = typeof metadata?.sub_type === "string" ? metadata.sub_type : "detected";
+    const vehicleLabel =
+      metadata?.vehicle_class === "motorcycle"
+        ? "Motor"
+        : metadata?.vehicle_class === "car"
+          ? "Mobil"
+          : "Kendaraan";
+
+    if (subType === "moved") {
+      return {
+        severity: "critical",
+        title: `${vehicleLabel} Parkir Bergerak!`,
+        message: `${vehicleLabel} yang diparkir di area kamera ${cameraName} terdeteksi bergeser atau dipindahkan.`,
+      };
+    }
+    if (subType === "missing") {
+      return {
+        severity: "critical",
+        title: `${vehicleLabel} Parkir Berkurang!`,
+        message: `${vehicleLabel} yang diparkir di area kamera ${cameraName} terdeteksi keluar atau hilang dari zona parkir.`,
+      };
+    }
+    if (subType === "entered") {
+      return {
+        severity: "warning",
+        title: `${vehicleLabel} Masuk Area Parkir`,
+        message: `${vehicleLabel} terdeteksi masuk ke zona parkir kamera ${cameraName}.`,
+      };
+    }
+    return {
+      severity: "warning",
+      title: `${vehicleLabel} Terdeteksi`,
+      message: `Aktivitas ${vehicleLabel.toLowerCase()} terdeteksi di area kamera ${cameraName}.`,
+    };
+  }
+  return {
+    severity: "warning",
+    title: "Gerakan Terdeteksi",
+    message: `Gerakan terdeteksi di area kamera ${cameraName}.`,
+  };
+}
 
 export const GET = routeHandler("internal.onvif_events.cameras", async (request, requestId) => {
   assertInternalSecret(request);
@@ -37,6 +94,10 @@ export const GET = routeHandler("internal.onvif_events.cameras", async (request,
     stream_url: string;
     motion_detection_enabled: boolean;
     person_detection_enabled: boolean;
+    vehicle_detection_enabled: boolean;
+    vehicle_guard_mode: boolean;
+    parking_zone: unknown;
+    last_ptz_at: Date | null;
     cooldown_seconds: number;
   }>(
     `SELECT d.id AS device_id,
@@ -44,6 +105,10 @@ export const GET = routeHandler("internal.onvif_events.cameras", async (request,
             t.stream_url,
             COALESCE(s.motion_detection_enabled, true) AS motion_detection_enabled,
             COALESCE(s.person_detection_enabled, true) AS person_detection_enabled,
+            COALESCE(s.vehicle_detection_enabled, true) AS vehicle_detection_enabled,
+            COALESCE(s.vehicle_guard_mode, false) AS vehicle_guard_mode,
+            s.parking_zone,
+            s.last_ptz_at,
             COALESCE(s.cooldown_seconds, 30) AS cooldown_seconds
      FROM devices d
      JOIN camera_telemetry t ON t.device_id = d.id
@@ -59,6 +124,10 @@ export const GET = routeHandler("internal.onvif_events.cameras", async (request,
     stream_url: row.stream_url,
     motion_detection_enabled: row.motion_detection_enabled,
     person_detection_enabled: row.person_detection_enabled,
+    vehicle_detection_enabled: row.vehicle_detection_enabled,
+    vehicle_guard_mode: row.vehicle_guard_mode,
+    parking_zone: normalizeParkingZone(row.parking_zone),
+    last_ptz_at: row.last_ptz_at ? new Date(row.last_ptz_at).toISOString() : null,
     cooldown_seconds: row.cooldown_seconds,
   }));
 
@@ -89,28 +158,25 @@ export const POST = routeHandler("internal.onvif_events.ingest", async (request,
     throw new AppError({ code: "RESOURCE_NOT_FOUND", message: "Perangkat tidak ditemukan." });
   }
 
-  const isPerson = input.alert_type === "person";
-  const severity = isPerson ? "critical" : "warning";
-  const title = isPerson ? "Orang Terdeteksi" : "Gerakan Terdeteksi";
   const cameraName = device.name ?? "Kamera";
-  const message = isPerson
-    ? `Seseorang terdeteksi di area kamera ${cameraName}.`
-    : `Gerakan terdeteksi di area kamera ${cameraName}.`;
+  const { severity, title, message } = resolveAlertCopy(input.alert_type, cameraName, input.metadata);
   const occurredAt = input.occurred_at ? new Date(input.occurred_at) : new Date();
   const thumbnailUrl = input.snapshot_path ? `/api/v1/mobile/alerts/${input.alert_id}/snapshot` : null;
+  const metadataJson = input.metadata ? JSON.stringify(input.metadata) : null;
 
   await query(
     `INSERT INTO camera_alerts (
        id, device_id, alert_type, severity, title, message,
        thumbnail_url, occurred_at, snapshot_path, clip_path,
-       clip_duration_seconds, evidence_status, onvif_topic
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       clip_duration_seconds, evidence_status, onvif_topic, metadata
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
      ON CONFLICT (id) DO UPDATE SET
        snapshot_path = COALESCE(EXCLUDED.snapshot_path, camera_alerts.snapshot_path),
        clip_path = COALESCE(EXCLUDED.clip_path, camera_alerts.clip_path),
        clip_duration_seconds = COALESCE(EXCLUDED.clip_duration_seconds, camera_alerts.clip_duration_seconds),
        evidence_status = EXCLUDED.evidence_status,
-       thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, camera_alerts.thumbnail_url)`,
+       thumbnail_url = COALESCE(EXCLUDED.thumbnail_url, camera_alerts.thumbnail_url),
+       metadata = COALESCE(EXCLUDED.metadata, camera_alerts.metadata)`,
     [
       input.alert_id,
       input.device_id,
@@ -125,6 +191,7 @@ export const POST = routeHandler("internal.onvif_events.ingest", async (request,
       input.clip_duration_seconds ?? null,
       input.evidence_status,
       input.onvif_topic,
+      metadataJson,
     ],
   );
 

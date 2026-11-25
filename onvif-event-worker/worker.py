@@ -13,6 +13,12 @@ import xml.etree.ElementTree as ET
 
 import aiohttp
 
+from vehicle_detector import (
+    ParkedVehicleTracker,
+    YoloOnnxDetector,
+    annotate_vehicle_snapshot,
+)
+
 WEB_INTERNAL_URL = os.environ.get("WEB_INTERNAL_URL", "http://127.0.0.1:701").rstrip("/")
 INTERNAL_WORKER_SECRET = os.environ.get("INTERNAL_WORKER_SECRET", "")
 MEDIAMTX_RTSP_BASE = os.environ.get("MEDIAMTX_RTSP_BASE", "rtsp://127.0.0.1:8554").rstrip("/")
@@ -20,6 +26,11 @@ EVIDENCE_DIR = Path(os.environ.get("EVIDENCE_DIR", "/evidence"))
 EVIDENCE_RETENTION_DAYS = int(os.environ.get("EVIDENCE_RETENTION_DAYS", "7"))
 CAMERA_SYNC_INTERVAL_SEC = int(os.environ.get("CAMERA_SYNC_INTERVAL_SEC", "60"))
 CLIP_DURATION_SEC = int(os.environ.get("CLIP_DURATION_SEC", "10"))
+VEHICLE_MAX_CONCURRENCY = max(1, int(os.environ.get("VEHICLE_MAX_CONCURRENCY", "1")))
+VEHICLE_BASELINE_REFRESH_SEC = int(os.environ.get("VEHICLE_BASELINE_REFRESH_SEC", "300"))
+VEHICLE_CONFIRM_DELAY_SEC = float(os.environ.get("VEHICLE_CONFIRM_DELAY_SEC", "1.5"))
+
+INFERENCE_SEMAPHORE = asyncio.Semaphore(VEHICLE_MAX_CONCURRENCY)
 
 
 def build_ws_security_header(username: str, password: str) -> str:
@@ -174,28 +185,9 @@ async def run_ffmpeg(args: list[str], timeout_sec: float = 25.0) -> bool:
         return False
 
 
-async def capture_and_report(
-    http_session: aiohttp.ClientSession,
-    camera: dict[str, Any],
-    alert_type: str,
-    topic: str,
-) -> None:
-    device_id = camera["device_id"]
-    stream_key = camera["stream_key"]
-    alert_id = str(uuid.uuid4())
-    occurred_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-    device_dir = EVIDENCE_DIR / device_id
-    device_dir.mkdir(parents=True, exist_ok=True)
-
-    snapshot_rel = f"{device_id}/{alert_id}.jpg"
-    clip_rel = f"{device_id}/{alert_id}.mp4"
-    snapshot_abs = EVIDENCE_DIR / snapshot_rel
-    clip_abs = EVIDENCE_DIR / clip_rel
-
-    rtsp_local = f"{MEDIAMTX_RTSP_BASE}/{stream_key}"
-
-    snap_ok = await run_ffmpeg(
+async def capture_snapshot(rtsp_local: str, dest: Path) -> bool:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return await run_ffmpeg(
         [
             "-y",
             "-rtsp_transport",
@@ -206,12 +198,15 @@ async def capture_and_report(
             "1",
             "-q:v",
             "3",
-            str(snapshot_abs),
+            str(dest),
         ],
         timeout_sec=15.0,
     )
 
-    clip_ok = await run_ffmpeg(
+
+async def capture_clip(rtsp_local: str, dest: Path) -> bool:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    return await run_ffmpeg(
         [
             "-y",
             "-rtsp_transport",
@@ -224,24 +219,13 @@ async def capture_and_report(
             "copy",
             "-movflags",
             "+faststart",
-            str(clip_abs),
+            str(dest),
         ],
         timeout_sec=float(CLIP_DURATION_SEC + 15),
     )
 
-    evidence_status = "ready" if (snap_ok or clip_ok) else "failed"
-    payload = {
-        "alert_id": alert_id,
-        "device_id": device_id,
-        "alert_type": alert_type,
-        "onvif_topic": topic,
-        "occurred_at": occurred_at,
-        "snapshot_path": snapshot_rel if snap_ok and snapshot_abs.exists() else None,
-        "clip_path": clip_rel if clip_ok and clip_abs.exists() else None,
-        "clip_duration_seconds": CLIP_DURATION_SEC if clip_ok else None,
-        "evidence_status": evidence_status,
-    }
 
+async def report_alert(http_session: aiohttp.ClientSession, payload: dict[str, Any]) -> None:
     headers = {"Content-Type": "application/json"}
     if INTERNAL_WORKER_SECRET:
         headers["X-Internal-Secret"] = INTERNAL_WORKER_SECRET
@@ -258,31 +242,185 @@ async def capture_and_report(
                 print(f"[onvif-worker] report failed ({resp.status}): {body}", flush=True)
             else:
                 print(
-                    f"[onvif-worker] alert sent device={device_id} type={alert_type} status={evidence_status}",
+                    f"[onvif-worker] alert sent device={payload['device_id']} type={payload['alert_type']} status={payload['evidence_status']}",
                     flush=True,
                 )
     except Exception as exc:
         print(f"[onvif-worker] error reporting alert: {exc}", flush=True)
 
 
+async def capture_and_report(
+    http_session: aiohttp.ClientSession,
+    camera: dict[str, Any],
+    alert_type: str,
+    topic: str,
+) -> None:
+    device_id = camera["device_id"]
+    stream_key = camera["stream_key"]
+    alert_id = str(uuid.uuid4())
+    occurred_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    snapshot_rel = f"{device_id}/{alert_id}.jpg"
+    clip_rel = f"{device_id}/{alert_id}.mp4"
+    snapshot_abs = EVIDENCE_DIR / snapshot_rel
+    clip_abs = EVIDENCE_DIR / clip_rel
+
+    rtsp_local = f"{MEDIAMTX_RTSP_BASE}/{stream_key}"
+    snap_ok = await capture_snapshot(rtsp_local, snapshot_abs)
+    clip_ok = await capture_clip(rtsp_local, clip_abs)
+
+    evidence_status = "ready" if (snap_ok or clip_ok) else "failed"
+    payload = {
+        "alert_id": alert_id,
+        "device_id": device_id,
+        "alert_type": alert_type,
+        "onvif_topic": topic,
+        "occurred_at": occurred_at,
+        "snapshot_path": snapshot_rel if snap_ok and snapshot_abs.exists() else None,
+        "clip_path": clip_rel if clip_ok and clip_abs.exists() else None,
+        "clip_duration_seconds": CLIP_DURATION_SEC if clip_ok else None,
+        "evidence_status": evidence_status,
+    }
+    await report_alert(http_session, payload)
+
+
 class CameraEventMonitor:
-    def __init__(self, http_session: aiohttp.ClientSession, camera: dict[str, Any]):
+    def __init__(self, http_session: aiohttp.ClientSession, camera: dict[str, Any], detector: YoloOnnxDetector):
         self.http_session = http_session
         self.camera = camera
+        self.detector = detector
+        self.vehicle_tracker = ParkedVehicleTracker()
         self.last_alert_ts: dict[str, float] = {}
+        self._vehicle_check_running = False
         self._stop = False
         self._task: asyncio.Task[None] | None = None
+        self._baseline_task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
         self._task = asyncio.create_task(self.run())
+        self._baseline_task = asyncio.create_task(self.baseline_refresh_loop())
 
     def stop(self) -> None:
         self._stop = True
         if self._task:
             self._task.cancel()
+        if self._baseline_task:
+            self._baseline_task.cancel()
 
     def update_config(self, camera: dict[str, Any]) -> None:
         self.camera = camera
+
+    async def _run_inference(self, img_path: Path):
+        async with INFERENCE_SEMAPHORE:
+            return await asyncio.to_thread(self.detector.detect, img_path)
+
+    async def baseline_refresh_loop(self) -> None:
+        """
+        Kalibrasi ringan posisi kendaraan parkir setiap 5 menit saat kamera tenang
+        (hanya 1 snapshot, ~60ms CPU) agar referensi parkir tetap akurat.
+        """
+        await asyncio.sleep(5)
+        while not self._stop:
+            try:
+                if (
+                    self.detector.available
+                    and self.camera.get("vehicle_detection_enabled", True)
+                    and not self._vehicle_check_running
+                ):
+                    now_mono = time.monotonic()
+                    if now_mono - self.last_alert_ts.get("vehicle", 0.0) >= 60.0:
+                        device_id = self.camera["device_id"]
+                        rtsp_local = f"{MEDIAMTX_RTSP_BASE}/{self.camera['stream_key']}"
+                        tmp_path = EVIDENCE_DIR / device_id / f"_baseline_{uuid.uuid4().hex[:8]}.jpg"
+                        try:
+                            if await capture_snapshot(rtsp_local, tmp_path):
+                                dets = await self._run_inference(tmp_path)
+                                self.vehicle_tracker.refresh_baseline(
+                                    dets,
+                                    self.camera.get("parking_zone"),
+                                    self.camera.get("last_ptz_at"),
+                                )
+                        finally:
+                            tmp_path.unlink(missing_ok=True)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                print(f"[vehicle-ai] baseline refresh error device={self.camera['device_id']}: {exc}", flush=True)
+            await asyncio.sleep(VEHICLE_BASELINE_REFRESH_SEC)
+
+    async def handle_vehicle_check(self, trigger_topic: str) -> None:
+        if self._vehicle_check_running:
+            return
+        self._vehicle_check_running = True
+        device_id = self.camera["device_id"]
+        stream_key = self.camera["stream_key"]
+        rtsp_local = f"{MEDIAMTX_RTSP_BASE}/{stream_key}"
+        parking_zone = self.camera.get("parking_zone")
+        guard_mode = bool(self.camera.get("vehicle_guard_mode", False))
+        last_ptz_at = self.camera.get("last_ptz_at")
+
+        tmp_frame1 = EVIDENCE_DIR / device_id / f"_vcheck_{uuid.uuid4().hex[:8]}.jpg"
+        try:
+            if not await capture_snapshot(rtsp_local, tmp_frame1):
+                return
+
+            dets1 = await self._run_inference(tmp_frame1)
+            eval1 = self.vehicle_tracker.evaluate(dets1, parking_zone, guard_mode, last_ptz_at)
+            if not eval1 or not eval1.should_alert:
+                return
+
+            # Konfirmasi frame ke-2 setelah jeda singkat untuk menghilangkan false positive sesaat
+            await asyncio.sleep(VEHICLE_CONFIRM_DELAY_SEC)
+            alert_id = str(uuid.uuid4())
+            occurred_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            snapshot_rel = f"{device_id}/{alert_id}.jpg"
+            clip_rel = f"{device_id}/{alert_id}.mp4"
+            snapshot_abs = EVIDENCE_DIR / snapshot_rel
+            clip_abs = EVIDENCE_DIR / clip_rel
+
+            snap_ok = await capture_snapshot(rtsp_local, snapshot_abs)
+            if not snap_ok:
+                return
+
+            dets2 = await self._run_inference(snapshot_abs)
+            eval2 = self.vehicle_tracker.evaluate(dets2, parking_zone, guard_mode, last_ptz_at)
+            if not eval2 or not eval2.should_alert:
+                snapshot_abs.unlink(missing_ok=True)
+                return
+
+            # Terkonfirmasi! Gambar bounding box bukti, rekam klip 10 detik, lalu kirim alert
+            self.last_alert_ts["vehicle"] = time.monotonic()
+            await asyncio.to_thread(annotate_vehicle_snapshot, snapshot_abs, eval2, parking_zone)
+            clip_ok = await capture_clip(rtsp_local, clip_abs)
+            self.vehicle_tracker.commit_baseline(eval2.vehicles_in_zone)
+
+            evidence_status = "ready" if (snap_ok or clip_ok) else "failed"
+            payload = {
+                "alert_id": alert_id,
+                "device_id": device_id,
+                "alert_type": "vehicle",
+                "onvif_topic": f"ai:VehicleDetector/{eval2.sub_type} (via {trigger_topic})",
+                "occurred_at": occurred_at,
+                "snapshot_path": snapshot_rel if snapshot_abs.exists() else None,
+                "clip_path": clip_rel if clip_ok and clip_abs.exists() else None,
+                "clip_duration_seconds": CLIP_DURATION_SEC if clip_ok else None,
+                "evidence_status": evidence_status,
+                "metadata": {
+                    "sub_type": eval2.sub_type,
+                    "vehicle_class": eval2.vehicle_class,
+                    "confidence": eval2.confidence,
+                    "count_before": eval2.count_before,
+                    "count_after": eval2.count_after,
+                    "person_nearby": eval2.person_nearby,
+                    "guard_mode": guard_mode,
+                },
+            }
+            await report_alert(self.http_session, payload)
+        except Exception as exc:
+            print(f"[vehicle-ai] check error device={device_id}: {exc}", flush=True)
+        finally:
+            tmp_frame1.unlink(missing_ok=True)
+            self._vehicle_check_running = False
 
     async def subscribe(self, urls: list[str], username: str, password: str) -> tuple[str, str] | None:
         body = "<tev:CreatePullPointSubscription><tev:InitialTerminationTime>PT300S</tev:InitialTerminationTime></tev:CreatePullPointSubscription>"
@@ -324,8 +462,6 @@ class CameraEventMonitor:
 
                 while not self._stop:
                     if time.monotonic() - last_renew >= 240:
-                        # Beberapa kamera Tapo tidak mendukung wsnt:Renew dan langsung merespons 400;
-                        # cukup break untuk membuat PullPointSubscription baru secara bersih.
                         break
 
                     pull_body = "<tev:PullMessages><tev:Timeout>PT25S</tev:Timeout><tev:MessageLimit>10</tev:MessageLimit></tev:PullMessages>"
@@ -336,6 +472,18 @@ class CameraEventMonitor:
                         break
 
                     parsed_events = parse_onvif_events(p_text)
+                    cooldown = int(self.camera.get("cooldown_seconds", 30))
+                    now_mono = time.monotonic()
+
+                    if (
+                        parsed_events
+                        and self.detector.available
+                        and self.camera.get("vehicle_detection_enabled", True)
+                        and not self._vehicle_check_running
+                        and (now_mono - self.last_alert_ts.get("vehicle", 0.0) >= cooldown)
+                    ):
+                        trigger_topic = parsed_events[0][1]
+                        asyncio.create_task(self.handle_vehicle_check(trigger_topic))
 
                     for alert_type, topic in parsed_events:
                         if alert_type == "motion" and not self.camera.get("motion_detection_enabled", True):
@@ -343,8 +491,6 @@ class CameraEventMonitor:
                         if alert_type == "person" and not self.camera.get("person_detection_enabled", True):
                             continue
 
-                        cooldown = int(self.camera.get("cooldown_seconds", 30))
-                        now_mono = time.monotonic()
                         if now_mono - self.last_alert_ts.get(alert_type, 0.0) < cooldown:
                             continue
                         self.last_alert_ts[alert_type] = now_mono
@@ -373,11 +519,15 @@ async def cleanup_old_evidence_loop() -> None:
 
 async def main() -> None:
     EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+    detector = YoloOnnxDetector()
     monitors: dict[str, CameraEventMonitor] = {}
 
     async with aiohttp.ClientSession() as http_session:
         asyncio.create_task(cleanup_old_evidence_loop())
-        print(f"[onvif-worker] started, polling {WEB_INTERNAL_URL}", flush=True)
+        print(
+            f"[onvif-worker] started, polling {WEB_INTERNAL_URL} (vehicle_ai={'ready' if detector.available else 'disabled'})",
+            flush=True,
+        )
 
         while True:
             try:
@@ -400,7 +550,7 @@ async def main() -> None:
                             if cid in monitors:
                                 monitors[cid].update_config(cam)
                             else:
-                                mon = CameraEventMonitor(http_session, cam)
+                                mon = CameraEventMonitor(http_session, cam, detector)
                                 monitors[cid] = mon
                                 mon.start()
                         for stale_id in list(monitors.keys()):
