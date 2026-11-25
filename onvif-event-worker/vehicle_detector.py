@@ -29,9 +29,15 @@ TRACKED_CLASS_IDS = {COCO_PERSON_ID, *COCO_VEHICLE_CLASSES.keys()}
 
 VEHICLE_MODEL_PATH = os.environ.get("VEHICLE_MODEL_PATH", "/app/models/yolo11n.onnx")
 ONNX_INTRA_THREADS = int(os.environ.get("ONNX_INTRA_THREADS", "1"))
-VEHICLE_CONF_THRESHOLD = float(os.environ.get("VEHICLE_CONF_THRESHOLD", "0.30"))
+VEHICLE_CONF_THRESHOLD = float(os.environ.get("VEHICLE_CONF_THRESHOLD", "0.25"))
+VEHICLE_RECHECK_CONF_THRESHOLD = float(os.environ.get("VEHICLE_RECHECK_CONF_THRESHOLD", "0.18"))
+PERSON_CONF_THRESHOLD = float(os.environ.get("PERSON_CONF_THRESHOLD", "0.50"))
 VEHICLE_NMS_IOU = float(os.environ.get("VEHICLE_NMS_IOU", "0.45"))
 PTZ_GRACE_SECONDS = float(os.environ.get("PTZ_GRACE_SECONDS", "12.0"))
+# Ambang kemiripan visual (ZNCC + Edge) di dalam kotak baseline untuk mencegah false alarm saat YOLO flicker
+VEHICLE_PATCH_STILL_PRESENT = float(os.environ.get("VEHICLE_PATCH_STILL_PRESENT", "0.70"))
+VEHICLE_PATCH_NO_MOVE = float(os.environ.get("VEHICLE_PATCH_NO_MOVE", "0.78"))
+PATCH_SIZE = 32
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,12 @@ class Detection:
 
 
 @dataclass
+class BaselineEntry:
+    box: Detection
+    patch: np.ndarray | None = None
+
+
+@dataclass
 class VehicleEvaluation:
     should_alert: bool
     sub_type: str  # "moved" | "missing" | "entered" | "detected"
@@ -71,6 +83,7 @@ class VehicleEvaluation:
     vehicles_in_zone: list[Detection]
     persons: list[Detection]
     baseline_snapshot: list[Detection]
+    min_visual_similarity: float | None = None
 
 
 def compute_iou(a: Detection, b: Detection) -> float:
@@ -104,6 +117,59 @@ def box_in_zone(det: Detection, zone: dict[str, float] | None) -> bool:
     iy2 = min(det.y2, zy2)
     inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
     return det.area > 0.0 and (inter / det.area) >= 0.25
+
+
+def extract_box_patch(image_path: Path | None, box: Detection) -> np.ndarray | None:
+    """
+    Mengekstrak potongan grayscale 32x32 dari area kotak kendaraan untuk verifikasi visual
+    berbasis struktur (tahan terhadap perubahan kecerahan/cahaya matahari).
+    """
+    if image_path is None or not image_path.exists():
+        return None
+    try:
+        with Image.open(image_path) as img:
+            gray = img.convert("L")
+            w, h = gray.size
+            x1 = max(0, min(w - 1, int(round(box.x1 * w))))
+            y1 = max(0, min(h - 1, int(round(box.y1 * h))))
+            x2 = max(x1 + 1, min(w, int(round(box.x2 * w))))
+            y2 = max(y1 + 1, min(h, int(round(box.y2 * h))))
+            crop = gray.crop((x1, y1, x2, y2)).resize((PATCH_SIZE, PATCH_SIZE), Image.Resampling.BILINEAR)
+            return np.asarray(crop, dtype=np.float32) / 255.0
+    except Exception:
+        return None
+
+
+def compute_patch_similarity(patch_a: np.ndarray | None, patch_b: np.ndarray | None) -> float:
+    """
+    Menghitung kemiripan visual tahan-pencahayaan (0.0 .. 1.0) antara dua patch 32x32:
+    - 55% ZNCC (Zero-Mean Normalized Cross-Correlation): tahan perubahan terang/gelap.
+    - 45% Edge-Gradient Cosine Similarity: mencocokkan bentuk kontur motor (jok, roda, plat).
+    """
+    if patch_a is None or patch_b is None or patch_a.shape != patch_b.shape:
+        return 0.0
+
+    # 1. ZNCC
+    a_zero = patch_a - float(np.mean(patch_a))
+    b_zero = patch_b - float(np.mean(patch_b))
+    denom = float(np.linalg.norm(a_zero) * np.linalg.norm(b_zero))
+    zncc = float(np.sum(a_zero * b_zero) / denom) if denom > 1e-6 else 0.0
+    zncc_clamped = max(0.0, min(1.0, zncc))
+
+    # 2. Edge-Gradient Cosine Similarity
+    gx_a = np.diff(patch_a, axis=1)[:-1, :]
+    gy_a = np.diff(patch_a, axis=0)[:, :-1]
+    mag_a = np.hypot(gx_a, gy_a)
+
+    gx_b = np.diff(patch_b, axis=1)[:-1, :]
+    gy_b = np.diff(patch_b, axis=0)[:, :-1]
+    mag_b = np.hypot(gx_b, gy_b)
+
+    edge_denom = float(np.linalg.norm(mag_a) * np.linalg.norm(mag_b))
+    edge_cos = float(np.sum(mag_a * mag_b) / edge_denom) if edge_denom > 1e-6 else 0.0
+    edge_clamped = max(0.0, min(1.0, edge_cos))
+
+    return 0.55 * zncc_clamped + 0.45 * edge_clamped
 
 
 def _nms(boxes: np.ndarray, scores: np.ndarray, iou_thresh: float) -> list[int]:
@@ -182,7 +248,7 @@ class YoloOnnxDetector:
             print(f"[vehicle-ai] gagal memuat model ONNX: {exc}", flush=True)
             self.session = None
 
-    def detect(self, image_path: Path, conf_threshold: float = VEHICLE_CONF_THRESHOLD) -> list[Detection]:
+    def detect(self, image_path: Path) -> list[Detection]:
         if not self.available or not image_path.exists():
             return []
 
@@ -222,7 +288,12 @@ class YoloOnnxDetector:
         class_ids = np.argmax(class_scores, axis=1)
         confidences = class_scores[np.arange(len(class_ids)), class_ids]
 
-        mask = (confidences >= conf_threshold) & np.isin(class_ids, list(TRACKED_CLASS_IDS))
+        # Gunakan ambang terpisah: person lebih ketat (0.50) agar jok motor tidak dikira orang,
+        # sedangkan kendaraan mengizinkan skor re-check (0.18) agar motor hitam sudut tinggi lebih stabil.
+        min_vehicle_conf = min(VEHICLE_CONF_THRESHOLD, VEHICLE_RECHECK_CONF_THRESHOLD)
+        is_person_valid = (class_ids == COCO_PERSON_ID) & (confidences >= PERSON_CONF_THRESHOLD)
+        is_vehicle_valid = np.isin(class_ids, list(COCO_VEHICLE_CLASSES.keys())) & (confidences >= min_vehicle_conf)
+        mask = is_person_valid | is_vehicle_valid
         if not np.any(mask):
             return []
 
@@ -279,13 +350,14 @@ def _parse_iso_ts(value: str | None) -> float | None:
 
 class ParkedVehicleTracker:
     """
-    Melacak posisi baseline kendaraan yang sedang parkir per kamera.
-    Membandingkan pergeseran bounding box AI (IoU & centroid), bukan perubahan piksel mentah,
-    sehingga tahan terhadap perubahan cahaya matahari, lampu, mode IR malam, dan bayangan.
+    Melacak posisi baseline kendaraan yang sedang parkir per kamera dengan pendekatan Hybrid:
+    1. Pencocokan Bounding Box AI (IoU & centroid) dengan toleransi re-check untuk motor gelap.
+    2. Verifikasi Visual Patch (ZNCC + Edge Similarity) di dalam kotak baseline agar YOLO confidence drop
+       (misal karena perubahan cahaya atau ada benda baru di dekat motor) TIDAK memicu alarm palsu 'missing/moved'.
     """
 
     def __init__(self) -> None:
-        self.baseline: list[Detection] = []
+        self.baseline: list[BaselineEntry] = []
         self.initialized: bool = False
         self.last_seen_ptz_at: str | None = None
         self.ptz_grace_until: float = 0.0
@@ -303,9 +375,13 @@ class ParkedVehicleTracker:
             return True
         return False
 
+    def _build_entries(self, boxes: list[Detection], image_path: Path | None) -> list[BaselineEntry]:
+        return [BaselineEntry(box=b, patch=extract_box_patch(image_path, b)) for b in boxes]
+
     def refresh_baseline(
         self,
         detections: list[Detection],
+        image_path: Path | None,
         parking_zone: dict[str, float] | None,
         last_ptz_at: str | None,
     ) -> None:
@@ -313,14 +389,17 @@ class ParkedVehicleTracker:
             return
         vehicles = [
             d for d in detections
-            if d.class_id in COCO_VEHICLE_CLASSES and box_in_zone(d, parking_zone)
+            if d.class_id in COCO_VEHICLE_CLASSES
+            and d.confidence >= VEHICLE_CONF_THRESHOLD
+            and box_in_zone(d, parking_zone)
         ]
-        self.baseline = vehicles
+        self.baseline = self._build_entries(vehicles, image_path)
         self.initialized = True
 
     def evaluate(
         self,
         detections: list[Detection],
+        image_path: Path | None,
         parking_zone: dict[str, float] | None,
         guard_mode: bool,
         last_ptz_at: str | None,
@@ -328,29 +407,35 @@ class ParkedVehicleTracker:
         if self._handle_ptz_grace(last_ptz_at):
             return None
 
-        vehicles = [
+        # Semua kandidat kendaraan (termasuk skor re-check 0.18 untuk menjaga baseline tetap stabil)
+        all_vehicles = [
             d for d in detections
             if d.class_id in COCO_VEHICLE_CLASSES and box_in_zone(d, parking_zone)
         ]
-        persons = [d for d in detections if d.class_id == COCO_PERSON_ID]
+        strong_vehicles = [d for d in all_vehicles if d.confidence >= VEHICLE_CONF_THRESHOLD]
+        persons = [
+            d for d in detections
+            if d.class_id == COCO_PERSON_ID and d.confidence >= PERSON_CONF_THRESHOLD
+        ]
 
         if not self.initialized:
-            self.baseline = vehicles
+            self.baseline = self._build_entries(strong_vehicles, image_path)
             self.initialized = True
             return None
 
         count_before = len(self.baseline)
-        count_after = len(vehicles)
 
-        # Greedy IoU matching antara baseline dan deteksi sekarang
+        # 1. Greedy IoU matching antara baseline dan semua kandidat kendaraan sekarang
         matched_cur: set[int] = set()
         matched_base: set[int] = set()
-        moved_indices: list[int] = []
+        moved_cur_indices: list[int] = []
+        sim_scores: list[float] = []
 
-        for b_idx, base_box in enumerate(self.baseline):
+        for b_idx, base_entry in enumerate(self.baseline):
+            base_box = base_entry.box
             best_iou = 0.0
             best_c_idx = -1
-            for c_idx, cur_box in enumerate(vehicles):
+            for c_idx, cur_box in enumerate(all_vehicles):
                 if c_idx in matched_cur:
                     continue
                 iou = compute_iou(base_box, cur_box)
@@ -361,39 +446,74 @@ class ParkedVehicleTracker:
             if best_c_idx >= 0 and best_iou >= 0.20:
                 matched_base.add(b_idx)
                 matched_cur.add(best_c_idx)
-                cur_box = vehicles[best_c_idx]
+                cur_box = all_vehicles[best_c_idx]
                 shift = math.hypot(cur_box.cx - base_box.cx, cur_box.cy - base_box.cy)
-                # Motor/kendaraan dianggap bergeser signifikan bila IoU < 0.50 atau pusat bergeser > 8% layar
                 if best_iou < 0.50 or shift > 0.08:
-                    moved_indices.append(best_c_idx)
+                    # Verifikasi visual di posisi kotak baseline: jika isi kotak lama masih sangat mirip,
+                    # berarti motornya belum pindah (hanya tepi kotak YOLO yang bergeser/jitter).
+                    cur_patch_at_base = extract_box_patch(image_path, base_box)
+                    sim = compute_patch_similarity(base_entry.patch, cur_patch_at_base)
+                    sim_scores.append(sim)
+                    if sim < VEHICLE_PATCH_NO_MOVE:
+                        moved_cur_indices.append(best_c_idx)
 
-        unmatched_cur = [i for i in range(count_after) if i not in matched_cur]
-        unmatched_base = [i for i in range(count_before) if i not in matched_base]
+        # 2. Verifikasi visual untuk setiap kotak baseline yang tidak terdeteksi YOLO di frame ini
+        truly_missing_base: list[int] = []
+        visually_present_boxes: list[Detection] = []
+        for b_idx, base_entry in enumerate(self.baseline):
+            if b_idx in matched_base:
+                continue
+            cur_patch = extract_box_patch(image_path, base_entry.box)
+            sim = compute_patch_similarity(base_entry.patch, cur_patch)
+            sim_scores.append(sim)
+            if base_entry.patch is not None and sim >= VEHICLE_PATCH_STILL_PRESENT:
+                # Motor secara visual MASIH ADA di dalam kotak baseline (hanya YOLO flicker) -> bukan hilang!
+                visually_present_boxes.append(base_entry.box)
+            else:
+                truly_missing_base.append(b_idx)
+
+        # Kendaraan baru hanya dihitung bila confidence >= VEHICLE_CONF_THRESHOLD (0.25)
+        new_cur_indices = [
+            i for i in range(len(all_vehicles))
+            if i not in matched_cur and all_vehicles[i].confidence >= VEHICLE_CONF_THRESHOLD
+        ]
+
+        # Gabungkan daftar kendaraan efektif di zona (yang terdeteksi YOLO + yang masih terverifikasi visual)
+        effective_vehicles: list[Detection] = []
+        highlighted: list[int] = []
+        cur_to_eff: dict[int, int] = {}
+
+        for i, v in enumerate(all_vehicles):
+            if i in matched_cur or i in new_cur_indices:
+                cur_to_eff[i] = len(effective_vehicles)
+                effective_vehicles.append(v)
+        for v in visually_present_boxes:
+            effective_vehicles.append(v)
+
+        count_after = len(effective_vehicles)
 
         # Cek apakah ada orang yang beririsan/dekat dengan kendaraan
         person_nearby = False
+        base_boxes = [e.box for e in self.baseline]
         for p in persons:
-            for v in vehicles + self.baseline:
+            for v in effective_vehicles + base_boxes:
                 if compute_iou(p, v) > 0.02 or math.hypot(p.cx - v.cx, p.cy - v.cy) < 0.22:
                     person_nearby = True
                     break
 
         sub_type: str | None = None
-        highlighted: list[int] = []
-
-        if moved_indices:
+        if moved_cur_indices:
             sub_type = "moved"
-            highlighted = moved_indices
-        elif unmatched_base and unmatched_cur:
-            # Kendaraan pindah cukup jauh sehingga tidak ter-match IoU > 0.20
+            highlighted = [cur_to_eff[i] for i in moved_cur_indices if i in cur_to_eff]
+        elif truly_missing_base and new_cur_indices:
             sub_type = "moved"
-            highlighted = unmatched_cur
-        elif unmatched_base and count_after < count_before:
+            highlighted = [cur_to_eff[i] for i in new_cur_indices if i in cur_to_eff]
+        elif truly_missing_base and count_after < count_before:
             sub_type = "missing"
             highlighted = []
-        elif unmatched_cur and count_after > count_before:
+        elif new_cur_indices and count_after > count_before:
             sub_type = "entered"
-            highlighted = unmatched_cur
+            highlighted = [cur_to_eff[i] for i in new_cur_indices if i in cur_to_eff]
         elif not guard_mode and count_after > 0 and count_before == 0:
             sub_type = "detected"
             highlighted = list(range(count_after))
@@ -401,11 +521,10 @@ class ParkedVehicleTracker:
         if not sub_type:
             return None
 
-        # Di Mode Jaga Parkir, prioritaskan pergeseran/hilang/masuk; di mode biasa semua perubahan kendaraan dilaporkan
         primary = (
-            vehicles[highlighted[0]]
+            effective_vehicles[highlighted[0]]
             if highlighted
-            else (self.baseline[unmatched_base[0]] if unmatched_base else vehicles[0])
+            else (self.baseline[truly_missing_base[0]].box if truly_missing_base else effective_vehicles[0])
         )
         return VehicleEvaluation(
             should_alert=True,
@@ -416,13 +535,14 @@ class ParkedVehicleTracker:
             count_after=count_after,
             person_nearby=person_nearby,
             highlighted_indices=highlighted,
-            vehicles_in_zone=vehicles,
+            vehicles_in_zone=effective_vehicles,
             persons=persons,
-            baseline_snapshot=list(self.baseline),
+            baseline_snapshot=base_boxes,
+            min_visual_similarity=round(min(sim_scores), 3) if sim_scores else None,
         )
 
-    def commit_baseline(self, vehicles: list[Detection]) -> None:
-        self.baseline = list(vehicles)
+    def commit_baseline(self, vehicles: list[Detection], image_path: Path | None) -> None:
+        self.baseline = self._build_entries(vehicles, image_path)
         self.initialized = True
 
 

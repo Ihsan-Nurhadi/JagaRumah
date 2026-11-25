@@ -32,7 +32,7 @@ CLIP_PRE_ROLL_SEC = float(os.environ.get("CLIP_PRE_ROLL_SEC", "4.0"))
 RECORDING_FLUSH_MARGIN_SEC = float(os.environ.get("RECORDING_FLUSH_MARGIN_SEC", "1.5"))
 VEHICLE_MAX_CONCURRENCY = max(1, int(os.environ.get("VEHICLE_MAX_CONCURRENCY", "1")))
 VEHICLE_BASELINE_REFRESH_SEC = int(os.environ.get("VEHICLE_BASELINE_REFRESH_SEC", "300"))
-VEHICLE_CONFIRM_DELAY_SEC = float(os.environ.get("VEHICLE_CONFIRM_DELAY_SEC", "1.5"))
+VEHICLE_CONFIRM_DELAY_SEC = float(os.environ.get("VEHICLE_CONFIRM_DELAY_SEC", "2.5"))
 
 INFERENCE_SEMAPHORE = asyncio.Semaphore(VEHICLE_MAX_CONCURRENCY)
 
@@ -538,8 +538,10 @@ class CameraEventMonitor:
                         try:
                             if await capture_snapshot(rtsp_local, tmp_path):
                                 dets = await self._run_inference(tmp_path)
-                                self.vehicle_tracker.refresh_baseline(
+                                await asyncio.to_thread(
+                                    self.vehicle_tracker.refresh_baseline,
                                     dets,
+                                    tmp_path,
                                     self.camera.get("parking_zone"),
                                     self.camera.get("last_ptz_at"),
                                 )
@@ -569,7 +571,14 @@ class CameraEventMonitor:
                 return
 
             dets1 = await self._run_inference(tmp_frame1)
-            eval1 = self.vehicle_tracker.evaluate(dets1, parking_zone, guard_mode, last_ptz_at)
+            eval1 = await asyncio.to_thread(
+                self.vehicle_tracker.evaluate,
+                dets1,
+                tmp_frame1,
+                parking_zone,
+                guard_mode,
+                last_ptz_at,
+            )
             if not eval1 or not eval1.should_alert:
                 return
 
@@ -587,16 +596,23 @@ class CameraEventMonitor:
                 return
 
             dets2 = await self._run_inference(snapshot_abs)
-            eval2 = self.vehicle_tracker.evaluate(dets2, parking_zone, guard_mode, last_ptz_at)
+            eval2 = await asyncio.to_thread(
+                self.vehicle_tracker.evaluate,
+                dets2,
+                snapshot_abs,
+                parking_zone,
+                guard_mode,
+                last_ptz_at,
+            )
             if not eval2 or not eval2.should_alert:
                 snapshot_abs.unlink(missing_ok=True)
                 return
 
-            # Terkonfirmasi! Gambar bounding box bukti, potong klip 10 detik (dengan pre-roll), lalu kirim alert
+            # Terkonfirmasi! Simpan baseline sebelum snapshot ditimpa kotak anotasi, lalu potong klip 10 detik
             self.last_alert_ts["vehicle"] = time.monotonic()
+            await asyncio.to_thread(self.vehicle_tracker.commit_baseline, eval2.vehicles_in_zone, snapshot_abs)
             await asyncio.to_thread(annotate_vehicle_snapshot, snapshot_abs, eval2, parking_zone)
             clip_ok = await capture_clip_synced(stream_key, rtsp_local, trigger_epoch, clip_abs)
-            self.vehicle_tracker.commit_baseline(eval2.vehicles_in_zone)
 
             evidence_status = "ready" if (snap_ok or clip_ok) else "failed"
             payload = {
@@ -617,6 +633,7 @@ class CameraEventMonitor:
                     "count_after": eval2.count_after,
                     "person_nearby": eval2.person_nearby,
                     "guard_mode": guard_mode,
+                    "visual_similarity": eval2.min_visual_similarity,
                 },
             }
             await report_alert(self.http_session, payload)
