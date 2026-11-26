@@ -266,8 +266,12 @@ export async function forgotPassword(input: z.infer<typeof forgotPasswordSchema>
 export async function resetPassword(input: z.infer<typeof resetPasswordSchema>) {
   passwordError(input.new_password);
   const result = await withTransaction(async (client) => {
-    const verification = await queryOne<{ id: string; customer_id: string; expires_at: Date; attempt_count: number }>("SELECT id,customer_id,expires_at,attempt_count FROM auth_verification_codes WHERE target=$1 AND channel='email' AND purpose='reset_password' AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE", [input.email], client);
-    if (!verification || verification.expires_at.getTime() <= Date.now()) throw new AppError({ code: "VERIFICATION_EXPIRED", message: "Kode reset password sudah kedaluwarsa." });
+    const verification = await queryOne<{ id: string; customer_id: string; is_expired: boolean; attempt_count: number }>(
+      "SELECT id,customer_id,(expires_at <= now()) AS is_expired,attempt_count FROM auth_verification_codes WHERE target=$1 AND channel='email' AND purpose='reset_password' AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1 FOR UPDATE",
+      [input.email],
+      client,
+    );
+    if (!verification || verification.is_expired) throw new AppError({ code: "VERIFICATION_EXPIRED", message: "Kode reset password sudah kedaluwarsa." });
     if (verification.attempt_count >= 5) throw new AppError({ code: "VERIFICATION_ATTEMPTS_EXCEEDED", message: "Terlalu banyak percobaan kode reset." });
     if (hash(input.code) !== (await queryOne<{ code_hash: string }>("SELECT code_hash FROM auth_verification_codes WHERE id=$1", [verification.id], client))?.code_hash) {
       await client.query("UPDATE auth_verification_codes SET attempt_count=attempt_count+1 WHERE id=$1", [verification.id]);
